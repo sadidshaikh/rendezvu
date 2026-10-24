@@ -1,6 +1,6 @@
 # Phase 1: Rooms and presence
 
-Status: **ready to build**. Backend: you · Frontend: Claude
+Status: **built**. Server and client are done; the multi-device checks in "Done when" are next. Backend: you · Frontend: Claude
 
 ## Goal
 
@@ -57,8 +57,8 @@ An in-memory `Map<code, InstantRoom>` where each entry has `createdAt`, `activat
 | Operation | Behaviour |
 |---|---|
 | `create(code, now, ttl)` | Add an entry: `expiresAt = now + ttl` (`INSTANT_ROOM_TTL`, default 12h). A ttl ≤ 0 means 12h |
-| `activateOrAllow(code, now)` | Used by **join**. Unknown or closed → `UNKNOWN`. Expired → mark closed, return `EXPIRED`. Otherwise set `activatedAt` if it's null, clear `emptySince`, and allow |
-| `allowActive(code, now)` | Used by **read-only checks** (room status now; TURN and SFU in Phases 3–4). Unknown or closed → `UNKNOWN`. Never joined → `NOT_STARTED`. Expired → mark closed, return `EXPIRED`. Otherwise allow |
+| `activateOrAllow(code, now)` | Used by **join**. Unknown → `UNKNOWN`. Closed, or expired now (mark it closed) → `EXPIRED`. Otherwise set `activatedAt` if it's null, clear `emptySince`, and allow |
+| `allowActive(code, now)` | Used by **read-only checks** (room status now; TURN and SFU in Phases 3–4). Unknown → `UNKNOWN`. Closed, or expired now (mark it closed) → `EXPIRED`. Never joined → `NOT_STARTED`. Otherwise allow |
 | `markEmpty(code, now)` | Called when the last peer leaves. Only for an existing, open, activated entry that isn't already empty: set `emptySince = now` |
 | `markActive(code)` | Clear `emptySince` |
 
@@ -68,7 +68,9 @@ Return the three outcomes as distinct errors or a small result type, so callers 
 
 *Why two "allow" operations:* joining is what starts a room. Checks such as "can this room get TURN credentials?" must not start a room that nobody has joined.
 
-*Optional:* entries are never removed, so memory grows slowly with every meeting created. Pruning closed or expired entries every hour is a safe addition.
+*Why a closed room says "expired" and not "unknown":* whichever check notices the expiry first marks the room closed. If closed rooms reported "unknown", whether you saw "no longer active" or "not available" would depend on whether the status page had already looked.
+
+**Pruning:** every hour, remove entries that are closed or expired, so memory doesn't grow with every meeting ever created. After pruning, the code is unknown.
 
 ### 2. Shared HTTP request guard
 
@@ -135,8 +137,9 @@ After the guard, a wrong method gets `405` and plain text `method not allowed`.
 
 Use `ws` in `noServer` mode and handle the HTTP server's `upgrade` event yourself:
 - Path isn't `/ws`: reply `404` and destroy the socket.
-- An `Origin` header whose **host** (scheme stripped) isn't one of the hosts in `ALLOWED_ORIGINS`: reply `403` and destroy the socket.
+- An `Origin` header whose **host** (scheme stripped) isn't one of the hosts in `ALLOWED_ORIGINS`, and isn't the server's own `Host`: reply `403` and destroy the socket.
 - No `Origin` header (a terminal client): allow.
+- Messages larger than **32 KiB** close the socket. The `ws` default is 100 MiB.
 
 *Why check Origin on WebSockets:* browsers don't apply CORS to WebSockets. Without this check, any website could open a socket to your server using a visitor's browser.
 
@@ -144,7 +147,7 @@ Use `ws` in `noServer` mode and handle the HTTP server's `upgrade` event yoursel
 1. Create a `Peer` with id = 8 random bytes as hex (16 characters).
 2. Send `{ "type": "welcome", "from": "<peerId>" }`.
 
-**Idle timeout:** if nothing has been received for **60 s**, close the socket. The client sends `ping` every 15 s, so a healthy connection never hits this. A dead one (laptop lid closed, network gone) is cleaned up within a minute instead of staying in the room forever.
+**Idle timeout:** if nothing has been received for **60 s**, terminate the socket. Terminate, not close: a dead peer can't answer a close handshake, and that would leave it in the room for another 30 s. The client sends `ping` every 15 s, so a healthy connection never hits this. A dead one (laptop lid closed, network gone) is cleaned up within a minute instead of staying in the room forever.
 
 **Every message received:**
 - Not valid JSON: send `error` with message `invalid JSON`. Keep the connection open.
@@ -170,7 +173,7 @@ Use `ws` in `noServer` mode and handle the HTTP server's `upgrade` event yoursel
    | anything else | `ROOM_UNAVAILABLE` | This meeting is not available right now. |
 
 3. Store `name`, `audio` and `video` from `data` on the peer. A missing `data` means an empty name and both flags `false`.
-4. If the peer is already in a **different** room, leave that room first (with the full "Leaving" behaviour).
+4. If the peer is already in a room, the same one or a different one, leave it first (with the full "Leaving" behaviour). Afterwards, call `registry.markActive(room)`: leaving a room you were alone in empties it for a moment, and that would otherwise start the empty-grace countdown on a room that is in use.
 5. Get or create the `Room` in the Hub.
 6. Build `peers` from everyone in the room **before adding the joiner**. Joiners never see themselves.
 7. Add the peer and set its current room.

@@ -1,0 +1,176 @@
+import type { IncomingMessage, Server } from 'node:http'
+import type { Duplex } from 'node:stream'
+import { randomBytes } from 'node:crypto'
+import { WebSocketServer, type RawData, type WebSocket } from 'ws'
+import type { Envelope, ErrorData, JoinData, SignalingErrorCode } from '@rendezvu/protocol'
+import { log } from '../log.ts'
+import type { InstantRoomRegistry } from '../meets/instant-rooms.ts'
+import { isMeetCode } from '../meets/meet-code.ts'
+import type { Hub } from './hub.ts'
+import { Peer } from './peer.ts'
+
+// The client pings every 15 s. Silence for this long means the other end is
+// gone (lid closed, network dropped) without a proper close.
+const READ_IDLE_TIMEOUT_MS = 60_000
+// Signaling messages are small JSON. The library default (100 MiB) would let
+// one client make the server buffer huge frames.
+const MAX_MESSAGE_BYTES = 32 * 1024
+
+interface Deps {
+  hub: Hub
+  registry: InstantRoomRegistry
+  allowedOrigins: string[]
+}
+
+export interface Signaling {
+  /** Closes every socket with 1001 (going away) so browsers reconnect promptly after a deploy. */
+  closeAll: () => void
+}
+
+export function attachSignaling(server: Server, deps: Deps): Signaling {
+  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES })
+  const allowedHosts = new Set(deps.allowedOrigins.map(hostOf).filter((h): h is string => h !== null))
+
+  server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+    const path = new URL(req.url ?? '/', 'http://localhost').pathname
+    if (path !== '/ws') {
+      rejectUpgrade(socket, 404, 'Not Found')
+      return
+    }
+    // Browsers don't apply CORS to WebSockets, so without this any website
+    // could open a socket here from a visitor's browser.
+    if (!originAllowed(req, allowedHosts)) {
+      rejectUpgrade(socket, 403, 'Forbidden')
+      return
+    }
+    wss.handleUpgrade(req, socket, head, (ws) => handleConnection(ws, deps))
+  })
+
+  return {
+    closeAll: () => {
+      for (const ws of wss.clients) ws.close(1001, 'server shutting down')
+    },
+  }
+}
+
+function handleConnection(ws: WebSocket, { hub, registry }: Deps): void {
+  const peer = new Peer(randomBytes(8).toString('hex'), ws)
+  log('ws_connect', { peer: peer.id })
+  peer.send({ type: 'welcome', from: peer.id })
+
+  let idleTimer = setTimeout(() => ws.terminate(), READ_IDLE_TIMEOUT_MS)
+  const resetIdle = () => {
+    clearTimeout(idleTimer)
+    idleTimer = setTimeout(() => ws.terminate(), READ_IDLE_TIMEOUT_MS)
+  }
+
+  ws.on('message', (raw: RawData) => {
+    resetIdle()
+    const env = parseEnvelope(raw)
+    if (!env) {
+      sendError(peer, 'invalid JSON')
+      return
+    }
+    handleMessage(peer, env, hub, registry)
+  })
+
+  ws.on('close', () => {
+    clearTimeout(idleTimer)
+    hub.leave(peer)
+    log('ws_disconnect', { peer: peer.id })
+  })
+
+  ws.on('error', (err) => log('ws_error', { peer: peer.id, error: err.message }))
+}
+
+function handleMessage(peer: Peer, env: Envelope, hub: Hub, registry: InstantRoomRegistry): void {
+  switch (env.type) {
+    case 'join':
+      handleJoin(peer, env, hub, registry)
+      return
+    case 'leave':
+      hub.leave(peer)
+      return
+    case 'ping':
+      peer.send({ type: 'pong' })
+      return
+    default:
+      sendError(peer, `unknown message type: ${String(env.type)}`)
+  }
+}
+
+function handleJoin(peer: Peer, env: Envelope, hub: Hub, registry: InstantRoomRegistry): void {
+  if (!env.room) {
+    sendError(peer, 'join requires room')
+    return
+  }
+  if (!isMeetCode(env.room)) {
+    sendError(peer, 'invalid room')
+    return
+  }
+
+  const access = registry.activateOrAllow(env.room)
+  if (access === 'expired') {
+    sendError(peer, 'This meeting is no longer active.', 'ROOM_EXPIRED')
+    return
+  }
+  if (access !== 'ok') {
+    sendError(peer, 'This meeting is not available right now.', 'ROOM_UNAVAILABLE')
+    return
+  }
+
+  hub.join(peer, env.room, readJoinData(env.data))
+  // join() leaves the peer's previous room first. Rejoining a room you were
+  // alone in empties it for a moment, which would start the empty-grace
+  // countdown on a room that is in use.
+  registry.markActive(env.room)
+}
+
+/** Missing or malformed fields fall back to an empty name and media off. */
+function readJoinData(data: unknown): JoinData {
+  const d = isObject(data) ? data : {}
+  return {
+    name: typeof d.name === 'string' ? d.name : '',
+    audio: d.audio === true,
+    video: d.video === true,
+  }
+}
+
+function parseEnvelope(raw: RawData): Envelope | null {
+  try {
+    const value: unknown = JSON.parse(raw.toString())
+    return isObject(value) ? (value as unknown as Envelope) : null
+  } catch {
+    return null
+  }
+}
+
+function sendError(peer: Peer, message: string, code?: SignalingErrorCode): void {
+  const data: ErrorData = code ? { message, code } : { message }
+  peer.send({ type: 'error', data })
+}
+
+function originAllowed(req: IncomingMessage, allowedHosts: Set<string>): boolean {
+  const origin = req.headers.origin
+  if (!origin) return true // not a browser
+  const host = hostOf(origin)
+  if (!host) return false
+  // Same host as the server itself is always fine, as with any same-origin request.
+  return allowedHosts.has(host) || host === req.headers.host?.toLowerCase()
+}
+
+function hostOf(origin: string): string | null {
+  try {
+    return new URL(origin).host.toLowerCase()
+  } catch {
+    return null
+  }
+}
+
+function rejectUpgrade(socket: Duplex, status: number, reason: string): void {
+  socket.end(`HTTP/1.1 ${status} ${reason}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`)
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
