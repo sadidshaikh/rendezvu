@@ -1,0 +1,24 @@
+{
+  "name": "@rendezvu/signaling",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "node --watch --env-file-if-exists=.env src/index.ts",
+    "start": "node --env-file-if-exists=.env src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@rendezvu/protocol": "*",
+    "@types/node": "^24.10.1",
+    "@types/ws": "^8.18.1",
+    "typescript": "^5.9.3"
+  }
+}
