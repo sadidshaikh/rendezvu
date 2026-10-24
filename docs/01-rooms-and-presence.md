@@ -241,7 +241,7 @@ Import shared types with `import type { Envelope, JoinData, ... } from '@rendezv
   1. Checks `/room/status` and shows "This room is no longer active." for an ended room.
   2. Otherwise asks for a name and joins.
   3. Shows the live participant list.
-  - Signaling errors with a code (`ROOM_EXPIRED`, `ROOM_UNAVAILABLE`) show their message as a toast.
+  - If the server refuses the join (`ROOM_EXPIRED`, `ROOM_UNAVAILABLE`), the page goes back to the lobby and shows the server's message in place of the join form.
   - **Leave** sends `leave` and shows "You've left the call" with a Rejoin button.
 
 ## Done when
