@@ -341,7 +341,7 @@ Cloudflare's JSON errors are forwarded unchanged so the client can read them. Ev
 ### Phase 14: Deploy and test for real
 
 **Build:**
-- Deployment: the client on a static host, Node on a host that supports WebSockets, real TLS, and separate staging and production Cloudflare credentials.
+- Deployment: the client on a static host, Node on a host that supports WebSockets, and real TLS. One environment: the same Cloudflare TURN key and SFU app as local development.
 - Run on real devices and real networks:
   - 2 people on different networks for 15 minutes
   - switching between Wi-Fi and mobile data
@@ -352,7 +352,7 @@ Cloudflare's JSON errors are forwarded unchanged so the client can read them. Ev
 
 **Why now:** Local testing hides real network behaviour. This is where you find the bugs that only show up on mobile data or behind strict NATs.
 
-**Done when:** the targets hold on staging with real devices.
+**Done when:** the targets hold on the deployed app with real devices.
 
 > **Milestone 2: the live call is done.** It works, it recovers, it adapts to the network, and you can measure it.
 

@@ -96,3 +96,20 @@ export interface ApiError {
   error: string
   code?: string
 }
+
+/** One STUN or TURN server, in the shape RTCPeerConnection takes. */
+export interface IceServer {
+  urls: string[]
+  username?: string
+  credential?: string
+}
+
+/** Body of `POST /ice-servers`. */
+export interface IceServersRequest {
+  roomId: string
+}
+
+/** Response of `POST /ice-servers`. TURN credentials in it expire after an hour. */
+export interface IceServersResponse {
+  iceServers: IceServer[]
+}

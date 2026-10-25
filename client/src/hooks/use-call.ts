@@ -1,5 +1,7 @@
 import { useEffect, useRef } from 'react'
-import type { ErrorData, JoinData, JoinedData, PeerJoinedData, PeerLeftData } from '@rendezvu/protocol'
+import { toast } from 'sonner'
+import type { ErrorData, IceServer, JoinData, JoinedData, PeerJoinedData, PeerLeftData } from '@rendezvu/protocol'
+import { fetchIceServers, startIceServerKeepalive } from '@/services/api/ice'
 import type { SignalingClient } from '@/services/signaling/client'
 import { usePeerStore } from '@/stores/peer'
 
@@ -15,10 +17,13 @@ interface Args {
   onRoomError: (message: string) => void
 }
 
+const ICE_RETRY_DELAY_MS = 1_000
+
 /**
  * Drives one participant's time in a room: join once the signaling client is
- * connected, keep the roster in sync, and leave on cleanup. Local media
- * belongs to the room page, which stops it when the user leaves.
+ * connected, keep the roster in sync, fetch ICE servers once the server has
+ * accepted the join, and leave on cleanup. Local media belongs to the room
+ * page, which stops it when the user leaves.
  */
 export function useCall({ client, roomId, enabled, userName, initialAudio, initialVideo, onRoomError }: Args) {
   // Read at join time only: changing these mid-call must not trigger a rejoin.
@@ -30,9 +35,51 @@ export function useCall({ client, roomId, enabled, userName, initialAudio, initi
   useEffect(() => {
     if (!client || !enabled) return
     const store = usePeerStore.getState
+    let disposed = false
+    let iceRequested = false
+    let stopIceKeepalive: (() => void) | null = null
+
+    // Only after `joined`: the server hands out TURN credentials for rooms
+    // that are active right now, and an instant room becomes active on its
+    // first join. Asking from the lobby would be refused.
+    const loadIceServers = async () => {
+      let servers: IceServer[] | null = null
+      let lastError: unknown
+      // fetchIceServers already retries; one more round with jitter so a
+      // short API blip doesn't cost TURN for the whole call.
+      for (let attempt = 0; attempt < 2 && !servers; attempt++) {
+        if (attempt > 0) await new Promise((r) => setTimeout(r, ICE_RETRY_DELAY_MS * (1 + Math.random() * 0.5)))
+        if (disposed) return
+        try {
+          servers = await fetchIceServers(roomId)
+        } catch (e) {
+          lastError = e
+        }
+      }
+      if (disposed) return
+      if (servers) {
+        store().setIceServers(servers)
+      } else {
+        // Without TURN, people on strict networks can't connect at all, so
+        // this is said out loud rather than only logged.
+        console.warn('[ice] fetch failed, continuing without TURN', lastError)
+        toast.warning('Could not reach the connection relay. The call may not work on restrictive networks.')
+      }
+      stopIceKeepalive = startIceServerKeepalive(
+        roomId,
+        (fresh) => {
+          if (!disposed) store().setIceServers(fresh)
+        },
+        (error) => console.warn('[ice] refresh failed', error),
+      )
+    }
 
     const handleJoined = (env: { data?: JoinedData }) => {
       store().setRoster(env.data?.peers ?? [])
+      if (!iceRequested) {
+        iceRequested = true
+        void loadIceServers()
+      }
     }
     const handlePeerJoined = (env: { data?: PeerJoinedData }) => {
       const d = env.data
@@ -60,6 +107,8 @@ export function useCall({ client, roomId, enabled, userName, initialAudio, initi
     client.send<JoinData>('join', { name: a.userName, audio: a.initialAudio, video: a.initialVideo }, { room: roomId })
 
     return () => {
+      disposed = true
+      stopIceKeepalive?.()
       client.off('joined', handleJoined)
       client.off('peer-joined', handlePeerJoined)
       client.off('peer-left', handlePeerLeft)

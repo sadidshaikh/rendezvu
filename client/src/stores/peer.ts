@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { toast } from 'sonner'
-import type { PeerInfo } from '@rendezvu/protocol'
+import type { IceServer, PeerInfo } from '@rendezvu/protocol'
 import { setAudioOutputDevice } from '@/lib/audio-context'
 import { getMicConstraints } from '@/lib/audio-constraints'
 import { getDevicePreferences, setDevicePreference } from '@/lib/device-preferences'
@@ -26,6 +26,8 @@ interface PeerState {
   /** True once the server has acknowledged our join with `joined`. */
   inRoom: boolean
   peers: Map<string, RemotePeer>
+  /** STUN/TURN servers for this call, fetched after `joined`. Empty until then, or if the fetch failed. */
+  iceServers: IceServer[]
 
   /**
    * Our own live tracks. Replaced with a new MediaStream on every change, so
@@ -40,7 +42,8 @@ interface PeerState {
   setRoster: (peers: PeerInfo[]) => void
   addPeer: (peer: RemotePeer) => void
   removePeer: (id: string) => void
-  /** Forgets the room's participants. Local media is untouched. */
+  setIceServers: (servers: IceServer[]) => void
+  /** Forgets the room's participants and ICE servers. Local media is untouched. */
   clearPeers: () => void
 
   enableMic: () => Promise<AcquireResult>
@@ -137,6 +140,7 @@ export const usePeerStore = create<PeerState>()((set, get) => {
   return {
     inRoom: false,
     peers: new Map(),
+    iceServers: [],
     localStream: null,
     facingMode: 'user',
     preferredAudioInputId: saved.audioInputId ?? '',
@@ -164,7 +168,9 @@ export const usePeerStore = create<PeerState>()((set, get) => {
         return { peers }
       }),
 
-    clearPeers: () => set({ inRoom: false, peers: new Map() }),
+    setIceServers: (iceServers) => set({ iceServers }),
+
+    clearPeers: () => set({ inRoom: false, peers: new Map(), iceServers: [] }),
 
     enableMic: async () => {
       const generation = ++audioGeneration
@@ -275,7 +281,7 @@ export const usePeerStore = create<PeerState>()((set, get) => {
       audioGeneration++
       videoGeneration++
       get().localStream?.getTracks().forEach((t) => t.stop())
-      set({ inRoom: false, peers: new Map(), localStream: null })
+      set({ inRoom: false, peers: new Map(), iceServers: [], localStream: null })
     },
   }
 })
