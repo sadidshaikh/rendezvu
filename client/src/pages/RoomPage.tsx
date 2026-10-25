@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router'
 import JoinMeet from '@/components/features/JoinMeet'
 import MeetCall from '@/components/features/MeetCall'
@@ -6,25 +6,47 @@ import { Button } from '@/components/ui/button'
 import { useCall } from '@/hooks/use-call'
 import { useSignaling } from '@/hooks/use-signaling'
 import { useJoinMeetStore } from '@/stores/join-meet'
+import { useMeetStore } from '@/stores/meet'
+import { usePeerStore } from '@/stores/peer'
 
 type Stage = 'lobby' | 'call' | 'left'
+
+/** Stops the camera and mic and resets the toggles to off. */
+function releaseMedia() {
+  usePeerStore.getState().clearAll()
+  useMeetStore.getState().clearMeet()
+}
 
 export default function RoomPage() {
   const { meetCode = '' } = useParams()
   const userName = useJoinMeetStore((s) => s.userName)
   const setUserName = useJoinMeetStore((s) => s.setUserName)
+  const isMuted = useMeetStore((s) => s.isMuted)
+  const isVideoOff = useMeetStore((s) => s.isVideoOff)
   const [stage, setStage] = useState<Stage>('lobby')
   const [roomError, setRoomError] = useState<string | null>(null)
 
   const inCall = stage === 'call'
   const { client, connState } = useSignaling(inCall)
 
+  // Media keeps running from lobby to call; it is released when the user
+  // leaves, or navigates away from the room page altogether.
+  useEffect(() => releaseMedia, [])
+
   const handleRoomError = useCallback((message: string) => {
     setRoomError(message)
     setStage('lobby')
   }, [])
 
-  useCall({ client, roomId: meetCode, enabled: inCall, userName, onRoomError: handleRoomError })
+  useCall({
+    client,
+    roomId: meetCode,
+    enabled: inCall,
+    userName,
+    initialAudio: !isMuted,
+    initialVideo: !isVideoOff,
+    onRoomError: handleRoomError,
+  })
 
   const handleJoin = (name: string) => {
     setUserName(name)
@@ -32,8 +54,13 @@ export default function RoomPage() {
     setStage('call')
   }
 
+  const handleLeave = () => {
+    setStage('left')
+    releaseMedia()
+  }
+
   if (stage === 'call') {
-    return <MeetCall meetCode={meetCode} userName={userName} connState={connState} onLeave={() => setStage('left')} />
+    return <MeetCall meetCode={meetCode} userName={userName} connState={connState} onLeave={handleLeave} />
   }
 
   if (stage === 'left') {

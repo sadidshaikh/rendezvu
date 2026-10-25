@@ -1,8 +1,12 @@
-import { Loader2, PhoneOff, Users } from 'lucide-react'
+import { Loader2, MicOff, PhoneOff, Users } from 'lucide-react'
 import { Avatar } from '@/components/ui/Avatar'
 import { Button } from '@/components/ui/button'
 import { ShareLinkButton } from '@/components/ui/ShareLinkButton'
+import { StreamVideo } from '@/components/ui/StreamVideo'
+import { useAudioLevel } from '@/hooks/use-audio-level'
+import { cn } from '@/lib/utils'
 import type { ConnState } from '@/services/signaling/client'
+import { useMeetStore } from '@/stores/meet'
 import { usePeerStore } from '@/stores/peer'
 
 interface MeetCallProps {
@@ -12,11 +16,30 @@ interface MeetCallProps {
   onLeave: () => void
 }
 
-/** The in-call screen. For now every tile is the camera-off view; media arrives in Phases 4–5. */
+interface Participant {
+  id: string
+  name: string
+  audio: boolean
+  isLocal: boolean
+}
+
+/**
+ * The in-call screen. Only your own tile has video so far; other people's
+ * media arrives in Phases 4–5. Mic icons show the state each person joined
+ * with, until live updates arrive in Phase 6.
+ */
 export default function MeetCall({ meetCode, userName, connState, onLeave }: MeetCallProps) {
   const inRoom = usePeerStore((s) => s.inRoom)
   const peers = usePeerStore((s) => s.peers)
-  const participants = [{ id: 'local', name: userName, isLocal: true }, ...[...peers.values()].map((p) => ({ ...p, isLocal: false }))]
+  const localStream = usePeerStore((s) => s.localStream)
+  const isMuted = useMeetStore((s) => s.isMuted)
+  const isVideoOff = useMeetStore((s) => s.isVideoOff)
+  const { speaking } = useAudioLevel(localStream, !isMuted)
+
+  const participants: Participant[] = [
+    { id: 'local', name: userName, audio: !isMuted, isLocal: true },
+    ...[...peers.values()].map((p) => ({ id: p.id, name: p.name, audio: p.audio, isLocal: false })),
+  ]
 
   return (
     <main className="call-stage flex min-h-screen flex-1 flex-col">
@@ -41,21 +64,29 @@ export default function MeetCall({ meetCode, userName, connState, onLeave }: Mee
           </div>
         ) : (
           <ul className="grid w-full max-w-5xl grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3" aria-label="Participants">
-            {participants.map((p) => (
-              <li
-                key={p.id}
-                className="tile-in app-panel relative overflow-hidden rounded-2xl"
-                style={{ aspectRatio: '16/9' }}
-              >
-                <div className="absolute inset-0 flex items-center justify-center bg-[linear-gradient(160deg,hsl(var(--surface-2)),hsl(var(--surface-3)))]">
-                  <Avatar name={p.name} size="lg" />
-                </div>
-                <div className="glass-pill absolute bottom-3 left-3 max-w-[calc(100%-1.5rem)] gap-1.5 px-2.5 py-1 text-[13px]">
-                  <span className="truncate">{p.name || 'Guest'}</span>
-                  {p.isLocal && <span className="text-muted-foreground">(You)</span>}
-                </div>
-              </li>
-            ))}
+            {participants.map((p) => {
+              const showVideo = p.isLocal && !isVideoOff && localStream
+              return (
+                <li
+                  key={p.id}
+                  className={cn('tile-in app-panel relative overflow-hidden rounded-2xl', p.isLocal && speaking && 'speaking-ring')}
+                  style={{ aspectRatio: '16/9' }}
+                >
+                  {showVideo ? (
+                    <StreamVideo stream={localStream} />
+                  ) : (
+                    <div className="absolute inset-0 flex items-center justify-center bg-[linear-gradient(160deg,hsl(var(--surface-2)),hsl(var(--surface-3)))]">
+                      <Avatar name={p.name} size="lg" />
+                    </div>
+                  )}
+                  <div className="glass-pill absolute bottom-3 left-3 max-w-[calc(100%-1.5rem)] gap-1.5 px-2.5 py-1 text-[13px]">
+                    {!p.audio && <MicOff className="size-3.5 shrink-0 text-destructive" aria-label="Muted" />}
+                    <span className="min-w-0 truncate">{p.name || 'Guest'}</span>
+                    {p.isLocal && <span className="text-muted-foreground">(You)</span>}
+                  </div>
+                </li>
+              )
+            })}
           </ul>
         )}
       </section>

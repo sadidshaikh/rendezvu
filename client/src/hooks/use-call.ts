@@ -8,18 +8,22 @@ interface Args {
   roomId: string
   enabled: boolean
   userName: string
+  /** Mic and camera as the user left them in the lobby. Sent with `join`. */
+  initialAudio: boolean
+  initialVideo: boolean
   /** The server refused the room (expired, unknown). The call cannot continue. */
   onRoomError: (message: string) => void
 }
 
 /**
  * Drives one participant's time in a room: join once the signaling client is
- * connected, keep the roster in sync, and leave on cleanup.
+ * connected, keep the roster in sync, and leave on cleanup. Local media
+ * belongs to the room page, which stops it when the user leaves.
  */
-export function useCall({ client, roomId, enabled, userName, onRoomError }: Args) {
-  // Read at join time only: renaming mid-call must not trigger a rejoin.
-  const userNameRef = useRef(userName)
-  userNameRef.current = userName
+export function useCall({ client, roomId, enabled, userName, initialAudio, initialVideo, onRoomError }: Args) {
+  // Read at join time only: changing these mid-call must not trigger a rejoin.
+  const joinArgs = useRef({ userName, initialAudio, initialVideo })
+  joinArgs.current = { userName, initialAudio, initialVideo }
   const onRoomErrorRef = useRef(onRoomError)
   onRoomErrorRef.current = onRoomError
 
@@ -52,7 +56,8 @@ export function useCall({ client, roomId, enabled, userName, onRoomError }: Args
     client.on('peer-left', handlePeerLeft)
     client.on('error', handleError)
 
-    client.send<JoinData>('join', { name: userNameRef.current, audio: false, video: false }, { room: roomId })
+    const a = joinArgs.current
+    client.send<JoinData>('join', { name: a.userName, audio: a.initialAudio, video: a.initialVideo }, { room: roomId })
 
     return () => {
       client.off('joined', handleJoined)
@@ -60,7 +65,7 @@ export function useCall({ client, roomId, enabled, userName, onRoomError }: Args
       client.off('peer-left', handlePeerLeft)
       client.off('error', handleError)
       client.send('leave', undefined, { room: roomId })
-      store().clearAll()
+      store().clearPeers()
     }
   }, [client, roomId, enabled])
 }

@@ -212,6 +212,66 @@
     box-shadow: 0 0 0 2px hsl(var(--field-focus) / 0.16);
 }
 
+/* ─── Call controls ──────────────────────────────────────────────────────── */
+
+/* Round control button: <button class="ctrl-btn ctrl-btn-on h-11 w-11"> */
+.ctrl-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 9999px;
+    cursor: pointer;
+    flex-shrink: 0;
+    outline: none;
+    transition:
+        background-color 160ms ease,
+        box-shadow 160ms ease,
+        filter 120ms ease,
+        transform 120ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.ctrl-btn:focus-visible {
+    box-shadow: 0 0 0 3px hsl(var(--ring) / 0.4);
+}
+
+.ctrl-btn:active {
+    transform: scale(0.91);
+}
+
+.ctrl-btn:disabled {
+    cursor: progress;
+    opacity: 0.7;
+}
+
+/* On: neutral, blends into the control bar */
+.ctrl-btn-on {
+    border: 1px solid hsl(var(--border) / 0.65);
+    background-color: hsl(var(--surface-2) / 0.9);
+    color: hsl(var(--foreground));
+}
+
+.ctrl-btn-on:hover {
+    background-color: hsl(var(--surface-3));
+}
+
+/* Off (muted, camera off): destructive, always visible */
+.ctrl-btn-off {
+    background-color: hsl(var(--destructive));
+    color: hsl(var(--destructive-foreground));
+    box-shadow: 0 4px 14px -4px hsl(var(--destructive) / 0.4);
+}
+
+.ctrl-btn-off:hover {
+    filter: brightness(1.09);
+}
+
+/* Tile outline while its person is talking */
+.speaking-ring {
+    box-shadow:
+        0 0 0 2px hsl(var(--primary)),
+        0 12px 36px -24px hsl(var(--shadow-color) / 0.22);
+}
+
 /* ─── Motion ─────────────────────────────────────────────────────────────── */
 
 @keyframes tile-in {
@@ -221,6 +281,7 @@
 
 .tile-in {
     animation: tile-in 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    transition: box-shadow 140ms ease-out;
 }
 
 .call-stage {
