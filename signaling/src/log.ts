@@ -4,6 +4,7 @@ type Fields = Record<string, string | number | boolean | null | undefined>
 export function log(event: string, fields: Fields = {}): void {
   const parts = Object.entries(fields)
     .filter(([, v]) => v !== undefined)
-    .map(([k, v]) => `${k}=${v}`)
+    // Quote values a reader would misparse, such as a name with a space.
+    .map(([k, v]) => `${k}=${typeof v === 'string' && (v === '' || /[\s"=]/.test(v)) ? JSON.stringify(v) : v}`)
   console.log([new Date().toISOString(), event, ...parts].join(' '))
 }

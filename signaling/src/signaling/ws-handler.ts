@@ -119,18 +119,35 @@ function handleJoin(peer: Peer, env: Envelope, hub: Hub, registry: InstantRoomRe
     return
   }
 
-  hub.join(peer, env.room, readJoinData(env.data))
+  const data = readJoinData(env.data)
+  hub.join(peer, env.room, data)
   // join() leaves the peer's previous room first. Rejoining a room you were
   // alone in empties it for a moment, which would start the empty-grace
   // countdown on a room that is in use.
   registry.markActive(env.room)
+  log('ws_join', { peer: peer.id, room: env.room, name: data.name, audio: data.audio, video: data.video })
+}
+
+const MAX_NAME_LENGTH = 40
+
+/**
+ * Names are shown on everyone's screen and written to logs. The lobby's
+ * maxLength only limits honest browsers, so the rule is enforced here: no
+ * control characters (newlines, terminal escapes), at most 40 code points so
+ * an emoji is never cut in half.
+ */
+function cleanName(raw: unknown): string {
+  if (typeof raw !== 'string') return ''
+  // A control character between words becomes a space ("Alice\nSmith" → "Alice Smith").
+  const chars = [...raw.replace(/[\p{Cc}\s]+/gu, ' ').trim()]
+  return chars.slice(0, MAX_NAME_LENGTH).join('').trim()
 }
 
 /** Missing or malformed fields fall back to an empty name and media off. */
 function readJoinData(data: unknown): JoinData {
   const d = isObject(data) ? data : {}
   return {
-    name: typeof d.name === 'string' ? d.name : '',
+    name: cleanName(d.name),
     audio: d.audio === true,
     video: d.video === true,
   }
