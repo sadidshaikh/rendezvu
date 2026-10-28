@@ -1,6 +1,6 @@
 # Phase 3: ICE servers and TURN
 
-Status: **frontend built**; backend next. Backend: you · Frontend: Claude
+Status: **built**. Frontend and backend are done; the real-network checks in "Done when" are next. Backend: you (written by Claude this phase) · Frontend: Claude
 
 ## Goal
 

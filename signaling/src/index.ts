@@ -5,6 +5,8 @@ import { createMeetHandler, roomStatusHandler } from './meets/routes.ts'
 import { createServer } from './server.ts'
 import { Hub } from './signaling/hub.ts'
 import { attachSignaling } from './signaling/ws-handler.ts'
+import { CloudflareTurnClient } from './turn/cloudflare-turn.ts'
+import { iceServersHandler } from './turn/routes.ts'
 
 const SHUTDOWN_TIMEOUT_MS = 10_000
 const PRUNE_ROOMS_EVERY_MS = 60 * 60_000
@@ -14,9 +16,14 @@ const config = loadConfig()
 const registry = new InstantRoomRegistry(config.instantRoomTtlMs, config.instantRoomEmptyGraceMs)
 const hub = new Hub((roomId) => registry.markEmpty(roomId))
 
+const { turnKeyId, turnApiToken } = config.cloudflare
+const turnClient = turnKeyId && turnApiToken ? new CloudflareTurnClient(turnKeyId, turnApiToken) : null
+if (!turnClient) console.warn('CF_TURN_KEY_ID / CF_TURN_API_TOKEN not set; /ice-servers will return STUN only')
+
 const server = createServer(config, {
   '/meets/new': createMeetHandler(registry, config.allowedOrigins),
   '/room/status': roomStatusHandler(registry, config.allowedOrigins),
+  '/ice-servers': iceServersHandler(registry, turnClient, config.allowedOrigins),
 })
 const signaling = attachSignaling(server, { hub, registry, allowedOrigins: config.allowedOrigins })
 
