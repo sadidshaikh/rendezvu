@@ -1,23 +1,16 @@
 import { useState } from 'react'
 import { Link } from 'react-router'
-import { Check, Circle, Loader2, X } from 'lucide-react'
-import type { ErrorData, IceServer, JoinData } from '@rendezvu/protocol'
+import { Loader2 } from 'lucide-react'
+import type { IceServer } from '@rendezvu/protocol'
+import { CheckSteps, idleSteps, type Step, type StepState } from '@/components/features/CheckSteps'
+import { SfuLoopbackCheck } from '@/components/features/SfuLoopbackCheck'
 import { Button } from '@/components/ui/button'
 import { Select } from '@/components/ui/select'
-import { wsServerUri } from '@/lib/config'
-import { cn } from '@/lib/utils'
 import { fetchIceServers } from '@/services/api/ice'
 import { createMeet } from '@/services/api/meet'
-import { SignalingClient } from '@/services/signaling/client'
+import type { SignalingClient } from '@/services/signaling/client'
+import { joinRoom } from '@/services/signaling/join-room'
 import { filterTurnUrls, runRelayCheck, type RelayCheckResult, type RelayTransport } from '@/services/webrtc/relay-check'
-
-type StepState = 'idle' | 'running' | 'done' | 'failed'
-
-interface Step {
-  label: string
-  state: StepState
-  detail?: string
-}
 
 const STEP_LABELS = ['Create a meeting', 'Join it, so the room is active', 'Fetch ICE servers', 'Connect through the relay only']
 
@@ -28,17 +21,17 @@ const TRANSPORTS: { value: RelayTransport; label: string }[] = [
   { value: 'tls', label: 'TLS only (turns:, port 443/5349)' },
 ]
 
-const JOIN_TIMEOUT_MS = 8_000
-
 /**
- * Diagnostic page that proves TURN works from the current network: it
- * goes through the same steps as a real call (meeting, join, /ice-servers),
- * then connects two peer connections in this tab with relay candidates only.
+ * Diagnostics. The TURN check proves the relay works from the current
+ * network: it goes through the same steps as a real call (meeting, join,
+ * /ice-servers), then connects two peer connections in this tab with relay
+ * candidates only. The SFU loopback below proves the round trip through
+ * Cloudflare's SFU.
  */
 export default function TurnCheckPage() {
   const [transport, setTransport] = useState<RelayTransport>('any')
   const [running, setRunning] = useState(false)
-  const [steps, setSteps] = useState<Step[]>(STEP_LABELS.map((label) => ({ label, state: 'idle' })))
+  const [steps, setSteps] = useState<Step[]>(() => idleSteps(STEP_LABELS))
   const [servers, setServers] = useState<IceServer[] | null>(null)
   const [result, setResult] = useState<RelayCheckResult | null>(null)
 
@@ -47,7 +40,7 @@ export default function TurnCheckPage() {
 
   const run = async () => {
     setRunning(true)
-    setSteps(STEP_LABELS.map((label) => ({ label, state: 'idle' })))
+    setSteps(idleSteps(STEP_LABELS))
     setServers(null)
     setResult(null)
     let client: SignalingClient | null = null
@@ -59,7 +52,7 @@ export default function TurnCheckPage() {
 
       step = 1
       update(step, 'running')
-      client = await joinRoom(meetCode)
+      client = await joinRoom(meetCode, 'TURN check')
       update(step, 'done', `peer ${client.getPeerId()}`)
 
       step = 2
@@ -127,17 +120,7 @@ export default function TurnCheckPage() {
         </Button>
       </section>
 
-      <ol className="app-panel flex flex-col divide-y divide-border rounded-2xl" aria-label="Steps">
-        {steps.map((s) => (
-          <li key={s.label} className="flex items-start gap-3 px-5 py-3.5">
-            <StepIcon state={s.state} />
-            <div className="min-w-0">
-              <p className={cn('text-sm', s.state === 'idle' ? 'text-muted-foreground' : 'text-foreground')}>{s.label}</p>
-              {s.detail && <p className="mt-0.5 text-xs break-words text-muted-foreground">{s.detail}</p>}
-            </div>
-          </li>
-        ))}
-      </ol>
+      <CheckSteps steps={steps} />
 
       {result?.ok && (
         <section className="app-panel rounded-2xl p-5">
@@ -181,40 +164,11 @@ export default function TurnCheckPage() {
         </section>
       )}
 
+      <SfuLoopbackCheck />
+
       <Link to="/" className="text-sm text-primary">
         Back to Rendezvu
       </Link>
     </main>
   )
-}
-
-function StepIcon({ state }: { state: StepState }) {
-  const cls = 'mt-0.5 size-4 shrink-0'
-  if (state === 'running') return <Loader2 className={cn(cls, 'animate-spin text-muted-foreground')} aria-label="Running" />
-  if (state === 'done') return <Check className={cn(cls, 'text-success')} aria-label="Done" />
-  if (state === 'failed') return <X className={cn(cls, 'text-destructive')} aria-label="Failed" />
-  return <Circle className={cn(cls, 'text-border')} aria-label="Not started" />
-}
-
-/** Connects to signaling and joins, resolving once the server answers `joined`. */
-function joinRoom(code: string): Promise<SignalingClient> {
-  return new Promise((resolve, reject) => {
-    const client = new SignalingClient(wsServerUri)
-    const fail = (message: string) => {
-      clearTimeout(timer)
-      client.dispose()
-      reject(new Error(message))
-    }
-    const timer = setTimeout(() => fail('Timed out joining the room.'), JOIN_TIMEOUT_MS)
-    client.on('joined', () => {
-      clearTimeout(timer)
-      resolve(client)
-    })
-    client.on<ErrorData>('error', (env) => fail(env.data?.message ?? 'The server refused the join.'))
-    client.onStateChange = (state) => {
-      if (state === 'connected') client.send<JoinData>('join', { name: 'TURN check', audio: false, video: false }, { room: code })
-      if (state === 'disconnected') fail('Could not reach the signaling server.')
-    }
-    client.connect()
-  })
 }

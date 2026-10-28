@@ -16,6 +16,7 @@ export type MsgType =
   | 'error'
   | 'ping'
   | 'pong'
+  | 'sfu-announce'
 
 /**
  * Every WebSocket message, in both directions, is one JSON envelope.
@@ -70,6 +71,23 @@ export type SignalingErrorCode = 'ROOM_UNAVAILABLE' | 'ROOM_EXPIRED'
 export interface ErrorData {
   message: string
   code?: SignalingErrorCode
+}
+
+/** One published track, addressed by its Cloudflare session plus this name. */
+export interface SfuTrackInfo {
+  trackName: string
+  mid?: string
+}
+
+/**
+ * client → server `sfu-announce`: the FULL set of tracks this peer publishes
+ * right now, sent only after Cloudflare has confirmed them. The server
+ * replaces, never merges; an empty `tracks` withdraws the session.
+ * Phase 5 reuses this shape for server → client `sfu-tracks`.
+ */
+export interface SfuTracksData {
+  sessionId: string
+  tracks: SfuTrackInfo[]
 }
 
 // ─── HTTP API ──────────────────────────────────────────────────────────────

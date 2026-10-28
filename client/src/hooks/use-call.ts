@@ -1,8 +1,9 @@
 import { useEffect, useRef } from 'react'
 import { toast } from 'sonner'
-import type { ErrorData, IceServer, JoinData, JoinedData, PeerJoinedData, PeerLeftData } from '@rendezvu/protocol'
+import type { ErrorData, IceServer, JoinData, JoinedData, PeerJoinedData, PeerLeftData, SfuTracksData } from '@rendezvu/protocol'
 import { fetchIceServers, startIceServerKeepalive } from '@/services/api/ice'
 import type { SignalingClient } from '@/services/signaling/client'
+import { SfuSession } from '@/services/webrtc/sfu-session'
 import { usePeerStore } from '@/stores/peer'
 
 interface Args {
@@ -18,12 +19,16 @@ interface Args {
 }
 
 const ICE_RETRY_DELAY_MS = 1_000
+// Only when /ice-servers was unreachable altogether (the server itself falls
+// back to this on a Cloudflare failure). Without any STUN server the browser
+// offers host candidates only, which can't reach Cloudflare from behind NAT.
+const STUN_FALLBACK: IceServer[] = [{ urls: ['stun:stun.l.google.com:19302'] }]
 
 /**
  * Drives one participant's time in a room: join once the signaling client is
  * connected, keep the roster in sync, fetch ICE servers once the server has
- * accepted the join, and leave on cleanup. Local media belongs to the room
- * page, which stops it when the user leaves.
+ * accepted the join, publish local media to the SFU, and leave on cleanup.
+ * Local media belongs to the room page, which stops it when the user leaves.
  */
 export function useCall({ client, roomId, enabled, userName, initialAudio, initialVideo, onRoomError }: Args) {
   // Read at join time only: changing these mid-call must not trigger a rejoin.
@@ -38,6 +43,35 @@ export function useCall({ client, roomId, enabled, userName, initialAudio, initi
     let disposed = false
     let iceRequested = false
     let stopIceKeepalive: (() => void) | null = null
+    let sfu: SfuSession | null = null
+    let stopPublishing: (() => void) | null = null
+
+    // After the ICE fetch, so the first connection already has TURN.
+    const startSfu = () => {
+      const peerId = client.getPeerId()
+      if (!peerId) return
+      const servers = store().iceServers
+      sfu = new SfuSession({
+        roomId,
+        peerId,
+        iceServers: servers.length > 0 ? servers : STUN_FALLBACK,
+        // Sent only once Cloudflare confirms, so nobody subscribes to a track that isn't live.
+        onLocalTracksChanged: (announcement) => client.send<SfuTracksData>('sfu-announce', announcement, { room: roomId }),
+        onPublishTimeout: () =>
+          toast.warning("Your camera or microphone isn't reaching the call yet.", { id: 'sfu-publish-timeout' }),
+        onConnectionStateChange: (state) => console.info('[sfu] publish connection', state),
+      })
+      const session = sfu
+      // Joining with both off publishes nothing and creates no Cloudflare session.
+      const publishLive = (stream: MediaStream | null) => {
+        if (stream) session.publish(stream)
+      }
+      publishLive(store().localStream)
+      // A device switch replaces localStream; publish swaps the track on the existing sender.
+      stopPublishing = usePeerStore.subscribe((state, prev) => {
+        if (state.localStream !== prev.localStream) publishLive(state.localStream)
+      })
+    }
 
     // Only after `joined`: the server hands out TURN credentials for rooms
     // that are active right now, and an instant room becomes active on its
@@ -65,10 +99,13 @@ export function useCall({ client, roomId, enabled, userName, initialAudio, initi
         console.warn('[ice] fetch failed, continuing without TURN', lastError)
         toast.warning('Could not reach the connection relay. The call may not work on restrictive networks.')
       }
+      startSfu()
       stopIceKeepalive = startIceServerKeepalive(
         roomId,
         (fresh) => {
-          if (!disposed) store().setIceServers(fresh)
+          if (disposed) return
+          store().setIceServers(fresh)
+          sfu?.updateIceServers(fresh)
         },
         (error) => console.warn('[ice] refresh failed', error),
       )
@@ -109,6 +146,8 @@ export function useCall({ client, roomId, enabled, userName, initialAudio, initi
     return () => {
       disposed = true
       stopIceKeepalive?.()
+      stopPublishing?.()
+      sfu?.destroy()
       client.off('joined', handleJoined)
       client.off('peer-joined', handlePeerJoined)
       client.off('peer-left', handlePeerLeft)
