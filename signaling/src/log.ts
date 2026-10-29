@@ -8,3 +8,8 @@ export function log(event: string, fields: Fields = {}): void {
     .map(([k, v]) => `${k}=${typeof v === 'string' && (v === '' || /[\s"=]/.test(v)) ? JSON.stringify(v) : v}`)
   console.log([new Date().toISOString(), event, ...parts].join(' '))
 }
+
+/** The message of anything thrown, for a log field. */
+export function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}

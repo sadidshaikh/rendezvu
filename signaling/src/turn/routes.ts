@@ -1,12 +1,14 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { IceServer, IceServersResponse } from '@rendezvu/protocol'
+import { watchClientGone } from '../http/client-gone.ts'
 import { guardApiRequest } from '../http/guard.ts'
 import { RateLimiter } from '../http/rate-limiter.ts'
 import { BodyTooLargeError, readJson } from '../http/read-json.ts'
-import { sendError, sendJson, sendText } from '../http/respond.ts'
-import { log } from '../log.ts'
+import { catchAsync, sendError, sendJson, sendText } from '../http/respond.ts'
+import { isObject } from '../json.ts'
+import { errorMessage, log } from '../log.ts'
 import type { InstantRoomRegistry } from '../meets/instant-rooms.ts'
-import { roomAccessError } from '../meets/room-access.ts'
+import { requireActiveRoom } from '../meets/room-access.ts'
 import type { CloudflareTurnClient } from './cloudflare-turn.ts'
 
 type Handler = (req: IncomingMessage, res: ServerResponse) => void
@@ -35,12 +37,7 @@ export function iceServersHandler(
       sendText(res, 405, 'method not allowed')
       return
     }
-    // The server calls routes synchronously, so an async failure has to be caught here.
-    handle(req, res, registry, turnClient).catch((err: unknown) => {
-      log('http_error', { path: '/ice-servers', error: err instanceof Error ? err.message : String(err) })
-      if (!res.headersSent) sendText(res, 500, 'internal error')
-      else res.end()
-    })
+    catchAsync(res, '/ice-servers', handle(req, res, registry, turnClient))
   }
 }
 
@@ -68,12 +65,7 @@ async function handle(
 
   // Only a room someone has joined. Stops anyone farming TURN credentials
   // (billed to us) from codes that were created but never used.
-  const access = registry.allowActive(roomId)
-  if (access !== 'ok') {
-    const refusal = roomAccessError(access)
-    sendError(res, refusal.status, refusal.code, refusal.message)
-    return
-  }
+  if (!requireActiveRoom(res, registry, roomId)) return
 
   const iceServers = turnClient ? await fromCloudflare(turnClient, roomId, res) : STUN_FALLBACK
   if (!iceServers) return // the client left; nobody to answer
@@ -94,12 +86,7 @@ async function fromCloudflare(
   roomId: string,
   res: ServerResponse,
 ): Promise<IceServer[] | null> {
-  // 'close' before the response is finished means the client went away.
-  const clientGone = new AbortController()
-  const onClose = () => {
-    if (!res.writableFinished) clientGone.abort()
-  }
-  res.on('close', onClose)
+  const clientGone = watchClientGone(res)
   try {
     const signal = AbortSignal.any([clientGone.signal, AbortSignal.timeout(CLOUDFLARE_TIMEOUT_MS)])
     return await turnClient.generateIceServers(CREDENTIAL_TTL_SECONDS, signal)
@@ -109,15 +96,15 @@ async function fromCloudflare(
       return null
     }
     // The error holds Cloudflare's status and body, never the credentials.
-    log('ice_error', { room: roomId, error: err instanceof Error ? err.message : String(err) })
+    log('ice_error', { room: roomId, error: errorMessage(err) })
     return STUN_FALLBACK
   } finally {
-    res.off('close', onClose)
+    clientGone.release()
   }
 }
 
 function readRoomId(body: unknown): string | null {
-  if (typeof body !== 'object' || body === null || Array.isArray(body)) return null
-  const roomId = (body as Record<string, unknown>).roomId
+  if (!isObject(body)) return null
+  const roomId = body.roomId
   return typeof roomId === 'string' && roomId !== '' ? roomId : null
 }

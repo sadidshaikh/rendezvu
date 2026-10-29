@@ -1,5 +1,6 @@
 import type { ServerResponse } from 'node:http'
 import type { ApiError } from '@rendezvu/protocol'
+import { errorMessage, log } from '../log.ts'
 
 export function sendJson(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
   res.writeHead(status, { 'Content-Type': 'application/json', ...headers })
@@ -15,4 +16,17 @@ export function sendText(res: ServerResponse, status: number, text: string, head
 export function sendError(res: ServerResponse, status: number, code: string, message: string): void {
   const body: ApiError = { error: message, code }
   sendJson(res, status, body)
+}
+
+/**
+ * Runs an async route body. The server calls routes synchronously, so an
+ * async failure has to be caught here: logged, and answered with a 500 if
+ * nothing was sent yet.
+ */
+export function catchAsync(res: ServerResponse, path: string, task: Promise<void>): void {
+  task.catch((err: unknown) => {
+    log('http_error', { path, error: errorMessage(err) })
+    if (!res.headersSent) sendText(res, 500, 'internal error')
+    else res.end()
+  })
 }

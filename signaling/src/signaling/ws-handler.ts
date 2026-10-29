@@ -2,10 +2,12 @@ import type { IncomingMessage, Server } from 'node:http'
 import type { Duplex } from 'node:stream'
 import { randomBytes } from 'node:crypto'
 import { WebSocketServer, type RawData, type WebSocket } from 'ws'
-import type { Envelope, ErrorData, JoinData, SignalingErrorCode } from '@rendezvu/protocol'
+import type { Envelope, ErrorData, JoinData, SfuTrackInfo, SfuTracksData, SignalingErrorCode } from '@rendezvu/protocol'
+import { isObject } from '../json.ts'
 import { log } from '../log.ts'
 import type { InstantRoomRegistry } from '../meets/instant-rooms.ts'
 import { isMeetCode } from '../meets/meet-code.ts'
+import type { SfuSessionRegistry } from '../sfu/session-registry.ts'
 import type { Hub } from './hub.ts'
 import { Peer } from './peer.ts'
 
@@ -15,10 +17,16 @@ const READ_IDLE_TIMEOUT_MS = 60_000
 // Signaling messages are small JSON. The library default (100 MiB) would let
 // one client make the server buffer huge frames.
 const MAX_MESSAGE_BYTES = 32 * 1024
+// A peer publishes a handful of tracks at most (mic, camera, later a screen).
+// Phase 5 replays the stored set to every later joiner, so junk stored once
+// would be sent many times.
+const MAX_ANNOUNCED_TRACKS = 8
+const MAX_SFU_ID_LENGTH = 256
 
 interface Deps {
   hub: Hub
   registry: InstantRoomRegistry
+  sfuSessions: SfuSessionRegistry
   allowedOrigins: string[]
 }
 
@@ -53,7 +61,8 @@ export function attachSignaling(server: Server, deps: Deps): Signaling {
   }
 }
 
-function handleConnection(ws: WebSocket, { hub, registry }: Deps): void {
+function handleConnection(ws: WebSocket, deps: Deps): void {
+  const { hub } = deps
   const peer = new Peer(randomBytes(8).toString('hex'), ws)
   log('ws_connect', { peer: peer.id })
   peer.send({ type: 'welcome', from: peer.id })
@@ -71,7 +80,7 @@ function handleConnection(ws: WebSocket, { hub, registry }: Deps): void {
       sendError(peer, 'invalid JSON')
       return
     }
-    handleMessage(peer, env, hub, registry)
+    handleMessage(peer, env, deps)
   })
 
   ws.on('close', () => {
@@ -83,10 +92,13 @@ function handleConnection(ws: WebSocket, { hub, registry }: Deps): void {
   ws.on('error', (err) => log('ws_error', { peer: peer.id, error: err.message }))
 }
 
-function handleMessage(peer: Peer, env: Envelope, hub: Hub, registry: InstantRoomRegistry): void {
+function handleMessage(peer: Peer, env: Envelope, { hub, registry, sfuSessions }: Deps): void {
   switch (env.type) {
     case 'join':
       handleJoin(peer, env, hub, registry)
+      return
+    case 'sfu-announce':
+      handleSfuAnnounce(peer, env, sfuSessions)
       return
     case 'leave':
       hub.leave(peer)
@@ -126,6 +138,41 @@ function handleJoin(peer: Peer, env: Envelope, hub: Hub, registry: InstantRoomRe
   // countdown on a room that is in use.
   registry.markActive(env.room)
   log('ws_join', { peer: peer.id, room: env.room, name: data.name, audio: data.audio, video: data.video })
+}
+
+/**
+ * The full set of tracks this peer has published, sent once Cloudflare has
+ * confirmed them. Phase 4 checks and logs it; Phase 5 stores it and tells the room.
+ */
+function handleSfuAnnounce(peer: Peer, env: Envelope, sfuSessions: SfuSessionRegistry): void {
+  if (!peer.roomId) {
+    sendError(peer, 'join first')
+    return
+  }
+  const data = readSfuTracks(env.data)
+  // The session must be this peer's own publish session. Otherwise a peer
+  // could announce someone else's tracks under its own name.
+  if (!data || !sfuSessions.isPublishSessionOf(data.sessionId, peer.id)) {
+    sendError(peer, 'invalid sfu-announce')
+    return
+  }
+  log('sfu_announce', { peer: peer.id, room: peer.roomId, session: data.sessionId, tracks: data.tracks.length })
+}
+
+/** Null unless every field is present and within bounds. An empty track list is valid: it withdraws the session. */
+function readSfuTracks(data: unknown): SfuTracksData | null {
+  if (!isObject(data) || !isSfuId(data.sessionId) || !Array.isArray(data.tracks)) return null
+  if (data.tracks.length > MAX_ANNOUNCED_TRACKS) return null
+  const tracks: SfuTrackInfo[] = []
+  for (const t of data.tracks as unknown[]) {
+    if (!isObject(t) || !isSfuId(t.trackName)) return null
+    tracks.push(typeof t.mid === 'string' ? { trackName: t.trackName, mid: t.mid } : { trackName: t.trackName })
+  }
+  return { sessionId: data.sessionId, tracks }
+}
+
+function isSfuId(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= MAX_SFU_ID_LENGTH
 }
 
 const MAX_NAME_LENGTH = 40
@@ -186,8 +233,4 @@ function hostOf(origin: string): string | null {
 
 function rejectUpgrade(socket: Duplex, status: number, reason: string): void {
   socket.end(`HTTP/1.1 ${status} ${reason}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`)
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }

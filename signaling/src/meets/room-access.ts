@@ -1,4 +1,6 @@
-import type { RoomAccess } from './instant-rooms.ts'
+import type { ServerResponse } from 'node:http'
+import { sendError } from '../http/respond.ts'
+import type { InstantRoomRegistry, RoomAccess } from './instant-rooms.ts'
 
 export interface RoomAccessError {
   status: number
@@ -19,4 +21,16 @@ export function roomAccessError(access: Exclude<RoomAccess, 'ok'>): RoomAccessEr
     case 'unknown':
       return { status: 403, code: 'ROOM_NOT_FOUND', message: 'This meeting is not active.' }
   }
+}
+
+/**
+ * For call APIs: true if the room is active right now. Otherwise answers
+ * with the matching refusal and returns false, and the route must stop.
+ */
+export function requireActiveRoom(res: ServerResponse, rooms: InstantRoomRegistry, roomId: string): boolean {
+  const access = rooms.allowActive(roomId)
+  if (access === 'ok') return true
+  const refusal = roomAccessError(access)
+  sendError(res, refusal.status, refusal.code, refusal.message)
+  return false
 }

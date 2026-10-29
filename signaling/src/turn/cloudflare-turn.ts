@@ -1,4 +1,5 @@
 import type { IceServer } from '@rendezvu/protocol'
+import { isObject } from '../json.ts'
 
 const BASE_URL = 'https://rtc.live.cloudflare.com/v1'
 // Enough of Cloudflare's error body to see why it refused, without flooding the log.
@@ -68,8 +69,4 @@ function readIceServers(body: unknown): IceServer[] {
  */
 function isPort53(url: string): boolean {
   return /:53(\?|$)/.test(url)
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }

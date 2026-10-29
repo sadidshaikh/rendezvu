@@ -7,9 +7,20 @@ import { Room } from './room.ts'
 export class Hub {
   private readonly rooms = new Map<string, Room>()
   private readonly onRoomEmpty: (roomId: string) => void
+  private readonly onPeerLeave: (peerId: string) => void
 
-  constructor(onRoomEmpty: (roomId: string) => void) {
+  /**
+   * `onPeerLeave` runs whenever a peer leaves a room, for any reason, so
+   * per-peer state elsewhere (SFU sessions) can't outlive the peer.
+   */
+  constructor(onRoomEmpty: (roomId: string) => void, onPeerLeave: (peerId: string) => void) {
     this.onRoomEmpty = onRoomEmpty
+    this.onPeerLeave = onPeerLeave
+  }
+
+  /** Whether this peer is connected and in this room right now. */
+  isInRoom(peerId: string, roomId: string): boolean {
+    return this.rooms.get(roomId)?.has(peerId) ?? false
   }
 
   /** Callers have already checked that `roomId` may be joined. */
@@ -55,6 +66,7 @@ export class Hub {
     if (!room) return
     room.remove(peer.id)
     log('leave', { peer: peer.id, room: roomId })
+    this.onPeerLeave(peer.id)
 
     if (room.isEmpty()) {
       this.rooms.delete(roomId)

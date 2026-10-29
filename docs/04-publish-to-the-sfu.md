@@ -1,6 +1,6 @@
 # Phase 4: Publish to the SFU
 
-Status: **frontend built**; backend next. Backend: you · Frontend: Claude
+Status: **built**. Frontend and backend are done; the real-network checks in "Done when" are next. Backend: you (items 2–7 written by Claude) · Frontend: Claude
 
 ## Goal
 

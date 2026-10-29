@@ -18,6 +18,10 @@ export class Room {
     this.members.delete(peerId)
   }
 
+  has(peerId: string): boolean {
+    return this.members.has(peerId)
+  }
+
   isEmpty(): boolean {
     return this.members.size === 0
   }
