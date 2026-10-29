@@ -3,6 +3,7 @@ import { toast } from 'sonner'
 import type { ErrorData, IceServer, JoinData, JoinedData, PeerJoinedData, PeerLeftData, SfuTracksData } from '@rendezvu/protocol'
 import { fetchIceServers, startIceServerKeepalive } from '@/services/api/ice'
 import type { SignalingClient } from '@/services/signaling/client'
+import { CallReconciler } from '@/services/webrtc/call-reconciler'
 import { SfuSession } from '@/services/webrtc/sfu-session'
 import { usePeerStore } from '@/stores/peer'
 
@@ -27,8 +28,9 @@ const STUN_FALLBACK: IceServer[] = [{ urls: ['stun:stun.l.google.com:19302'] }]
 /**
  * Drives one participant's time in a room: join once the signaling client is
  * connected, keep the roster in sync, fetch ICE servers once the server has
- * accepted the join, publish local media to the SFU, and leave on cleanup.
- * Local media belongs to the room page, which stops it when the user leaves.
+ * accepted the join, publish local media to the SFU, pull everyone else's,
+ * and leave on cleanup. Local media belongs to the room page, which stops it
+ * when the user leaves.
  */
 export function useCall({ client, roomId, enabled, userName, initialAudio, initialVideo, onRoomError }: Args) {
   // Read at join time only: changing these mid-call must not trigger a rejoin.
@@ -45,6 +47,19 @@ export function useCall({ client, roomId, enabled, userName, initialAudio, initi
     let stopIceKeepalive: (() => void) | null = null
     let sfu: SfuSession | null = null
     let stopPublishing: (() => void) | null = null
+
+    // Created before the join: the replay of everyone's tracks arrives right
+    // after `joined`, long before the SFU session exists. It's recorded here
+    // and acted on once the session is up.
+    const reconciler = new CallReconciler({
+      getSession: () => sfu,
+      onTrack: (peerId, track) => {
+        store().setRemoteTrack(peerId, track)
+        // The publisher stopped it, or its connection died.
+        track.addEventListener('ended', () => store().removeRemoteTrack(peerId, track), { once: true })
+      },
+      onTrackGone: (peerId, track) => store().removeRemoteTrack(peerId, track),
+    })
 
     // After the ICE fetch, so the first connection already has TURN.
     const startSfu = () => {
@@ -71,6 +86,8 @@ export function useCall({ client, roomId, enabled, userName, initialAudio, initi
       stopPublishing = usePeerStore.subscribe((state, prev) => {
         if (state.localStream !== prev.localStream) publishLive(state.localStream)
       })
+      // Pull everyone whose tracks were announced while we were getting here.
+      reconciler.reconcile()
     }
 
     // Only after `joined`: the server hands out TURN credentials for rooms
@@ -124,7 +141,17 @@ export function useCall({ client, roomId, enabled, userName, initialAudio, initi
       store().addPeer({ id: d.peerId, name: d.name, audio: d.audio, video: d.video })
     }
     const handlePeerLeft = (env: { data?: PeerLeftData }) => {
-      if (env.data) store().removePeer(env.data.peerId)
+      if (!env.data) return
+      store().removePeer(env.data.peerId)
+      reconciler.removePeer(env.data.peerId)
+      reconciler.reconcile()
+    }
+    const handleSfuTracks = (env: { from?: string; data?: SfuTracksData }) => {
+      const d = env.data
+      // Our own tracks are never sent to us; ignore one if it ever is.
+      if (!env.from || !d || env.from === client.getPeerId()) return
+      reconciler.setPeerTracks(env.from, d.sessionId, d.tracks.map((t) => t.trackName))
+      reconciler.reconcile()
     }
     const handleError = (env: { data?: ErrorData }) => {
       const d = env.data
@@ -138,6 +165,7 @@ export function useCall({ client, roomId, enabled, userName, initialAudio, initi
     client.on('joined', handleJoined)
     client.on('peer-joined', handlePeerJoined)
     client.on('peer-left', handlePeerLeft)
+    client.on('sfu-tracks', handleSfuTracks)
     client.on('error', handleError)
 
     const a = joinArgs.current
@@ -147,10 +175,12 @@ export function useCall({ client, roomId, enabled, userName, initialAudio, initi
       disposed = true
       stopIceKeepalive?.()
       stopPublishing?.()
+      reconciler.dispose()
       sfu?.destroy()
       client.off('joined', handleJoined)
       client.off('peer-joined', handlePeerJoined)
       client.off('peer-left', handlePeerLeft)
+      client.off('sfu-tracks', handleSfuTracks)
       client.off('error', handleError)
       client.send('leave', undefined, { room: roomId })
       store().clearPeers()

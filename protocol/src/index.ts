@@ -17,6 +17,7 @@ export type MsgType =
   | 'ping'
   | 'pong'
   | 'sfu-announce'
+  | 'sfu-tracks'
 
 /**
  * Every WebSocket message, in both directions, is one JSON envelope.
@@ -83,7 +84,8 @@ export interface SfuTrackInfo {
  * client → server `sfu-announce`: the FULL set of tracks this peer publishes
  * right now, sent only after Cloudflare has confirmed them. The server
  * replaces, never merges; an empty `tracks` withdraws the session.
- * Phase 5 reuses this shape for server → client `sfu-tracks`.
+ * Also server → client `sfu-tracks`, with `from` naming the publisher: sent
+ * to the room on every change, and replayed to each newcomer after `joined`.
  */
 export interface SfuTracksData {
   sessionId: string

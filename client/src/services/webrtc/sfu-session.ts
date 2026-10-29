@@ -18,6 +18,14 @@ export interface SfuSessionOptions {
   onConnectionStateChange?: (state: RTCPeerConnectionState) => void
 }
 
+/** Our subscribe session for one remote publisher, and every pull running on it. */
+interface RemoteSubscription {
+  tracks: PartyTracks
+  subscriptions: Subscription[]
+  /** Our own Cloudflare session id for this connection, once created. */
+  sessionId?: string
+}
+
 const SFU_PREFIX = `${httpServerUri}/sfu`
 // A push normally confirms in 1–3 s. partytracks retries internally forever,
 // so a push that can't reach Cloudflare looks just like a slow one; only the
@@ -39,12 +47,13 @@ export class SfuSession {
   // builds a new connection, so refreshed credentials are swapped in place.
   private readonly iceServers: RTCIceServer[]
   private readonly pubTracks: PartyTracks
-  private readonly subTracks = new Map<string, PartyTracks>()
+  // Remote publisher's session id → our subscribe connection to it.
+  private readonly remotes = new Map<string, RemoteSubscription>()
   // 'pub' or `sub:<remote session id>` → the live connection.
   private readonly peerConnections = new Map<string, RTCPeerConnection>()
-  // Our own Cloudflare session ids, released with DELETE on destroy.
-  private readonly ownSessionIds = new Set<string>()
-  private readonly subscriptions: Subscription[] = []
+  // Our publish session ids, released with DELETE on destroy.
+  private readonly pubSessionIds = new Set<string>()
+  private readonly pubSubscriptions: Subscription[] = []
 
   // kind → subject feeding that kind's push. A new value swaps the track on
   // the existing sender, with no renegotiation.
@@ -93,14 +102,28 @@ export class SfuSession {
    */
   subscribeTrack(remoteSessionId: string, trackName: string, onTrack: (track: MediaStreamTrack) => void): () => void {
     if (this.destroyed) return () => {}
-    const sub = this.subscribeSession(remoteSessionId)
+    const remote = this.remoteFor(remoteSessionId)
+    const sub = remote.tracks
       .pull(of({ location: 'remote' as const, sessionId: remoteSessionId, trackName }))
       .subscribe({
         next: onTrack,
         error: (err) => console.error(`[sfu] pull ${remoteSessionId}/${trackName} failed`, err),
       })
-    this.subscriptions.push(sub)
+    remote.subscriptions.push(sub)
     return () => sub.unsubscribe()
+  }
+
+  /**
+   * Stops every pull from one remote publisher, closes our connection to it
+   * and releases that subscribe session. For a person who left, or whose
+   * publish session was replaced by a new one.
+   */
+  unsubscribeSession(remoteSessionId: string): void {
+    const remote = this.remotes.get(remoteSessionId)
+    if (!remote) return
+    this.remotes.delete(remoteSessionId)
+    this.peerConnections.delete(`sub:${remoteSessionId}`)
+    this.closeRemote(remote)
   }
 
   /** Fresh TURN credentials: live connections get them now, rebuilt ones read the shared array. */
@@ -123,18 +146,29 @@ export class SfuSession {
     for (const timer of this.ackTimers.values()) clearTimeout(timer)
     this.ackTimers.clear()
     for (const sub of this.pushSubs.values()) sub.unsubscribe()
-    for (const sub of this.subscriptions) sub.unsubscribe()
-    // Unsubscribing everything closes the peer connections (partytracks
-    // shares them with refCount). Cloudflare ends a session when its
-    // connection closes; the DELETE tells our server to forget it.
-    for (const sessionId of this.ownSessionIds) {
-      void fetch(`${SFU_PREFIX}/sessions/${encodeURIComponent(sessionId)}?${this.params}`, {
-        method: 'DELETE',
-        // Still sent if the page is closing.
-        keepalive: true,
-      }).catch(() => {})
-    }
+    for (const sub of this.pubSubscriptions) sub.unsubscribe()
+    for (const sessionId of this.pubSessionIds) this.releaseSession(sessionId)
+    for (const remote of this.remotes.values()) this.closeRemote(remote)
+    this.remotes.clear()
     this.peerConnections.clear()
+  }
+
+  /**
+   * Unsubscribing everything closes the connection (partytracks shares it
+   * with refCount), and Cloudflare ends a session when its connection closes.
+   */
+  private closeRemote(remote: RemoteSubscription): void {
+    for (const sub of remote.subscriptions) sub.unsubscribe()
+    if (remote.sessionId) this.releaseSession(remote.sessionId)
+  }
+
+  /** Tells our server to forget one of our sessions, so its id can't be used again. */
+  private releaseSession(sessionId: string): void {
+    void fetch(`${SFU_PREFIX}/sessions/${encodeURIComponent(sessionId)}?${this.params}`, {
+      method: 'DELETE',
+      // Still sent if the page is closing.
+      keepalive: true,
+    }).catch(() => {})
   }
 
   private publishTrack(track: MediaStreamTrack): void {
@@ -153,10 +187,10 @@ export class SfuSession {
       // Subscribing here, not in the constructor, keeps the Cloudflare session
       // from existing before there is something to send.
       this.pubWired = true
-      this.subscriptions.push(
+      this.pubSubscriptions.push(
         this.pubTracks.session$.subscribe(({ peerConnection, sessionId }) => {
           this.peerConnections.set('pub', peerConnection)
-          this.ownSessionIds.add(sessionId)
+          this.pubSessionIds.add(sessionId)
         }),
         this.pubTracks.peerConnectionState$.subscribe((state) => this.opts.onConnectionStateChange?.(state)),
       )
@@ -196,23 +230,27 @@ export class SfuSession {
     this.pushSubs.set(kind, sub)
   }
 
-  private subscribeSession(remoteSessionId: string): PartyTracks {
-    let tracks = this.subTracks.get(remoteSessionId)
-    if (!tracks) {
-      tracks = new PartyTracks({
-        prefix: SFU_PREFIX,
-        apiExtraParams: `${this.params}&kind=subscribe`,
-        iceServers: this.iceServers,
-      })
-      this.subTracks.set(remoteSessionId, tracks)
-      this.subscriptions.push(
-        tracks.session$.subscribe(({ peerConnection, sessionId }) => {
+  private remoteFor(remoteSessionId: string): RemoteSubscription {
+    let remote = this.remotes.get(remoteSessionId)
+    if (!remote) {
+      const created: RemoteSubscription = {
+        tracks: new PartyTracks({
+          prefix: SFU_PREFIX,
+          apiExtraParams: `${this.params}&kind=subscribe`,
+          iceServers: this.iceServers,
+        }),
+        subscriptions: [],
+      }
+      created.subscriptions.push(
+        created.tracks.session$.subscribe(({ peerConnection, sessionId }) => {
           this.peerConnections.set(`sub:${remoteSessionId}`, peerConnection)
-          this.ownSessionIds.add(sessionId)
+          created.sessionId = sessionId
         }),
       )
+      this.remotes.set(remoteSessionId, created)
+      remote = created
     }
-    return tracks
+    return remote
   }
 
   private emitLocalTracksChanged(): void {

@@ -6,7 +6,7 @@ import { getMicConstraints } from '@/lib/audio-constraints'
 import { getDevicePreferences, setDevicePreference } from '@/lib/device-preferences'
 import { describeMediaError } from '@/lib/media-errors'
 
-/** One remote participant. Later phases add their media and connection state. */
+/** One remote participant. Their media is in `remoteStreams`, keyed by the same id. */
 export interface RemotePeer {
   id: string
   name: string
@@ -28,6 +28,13 @@ interface PeerState {
   peers: Map<string, RemotePeer>
   /** STUN/TURN servers for this call, fetched after `joined`. Empty until then, or if the fetch failed. */
   iceServers: IceServer[]
+  /**
+   * Each remote participant's received tracks, at most one per kind. A new
+   * MediaStream on every change: adding a track to an existing stream from
+   * JavaScript fires no event, so a <video> already showing it would never
+   * notice. A new object changes the prop, and the element re-attaches.
+   */
+  remoteStreams: Map<string, MediaStream>
 
   /**
    * Our own live tracks. Replaced with a new MediaStream on every change, so
@@ -43,7 +50,11 @@ interface PeerState {
   addPeer: (peer: RemotePeer) => void
   removePeer: (id: string) => void
   setIceServers: (servers: IceServer[]) => void
-  /** Forgets the room's participants and ICE servers. Local media is untouched. */
+  /** Replaces the participant's track of the same kind. */
+  setRemoteTrack: (peerId: string, track: MediaStreamTrack) => void
+  /** No-op if that track was already replaced. */
+  removeRemoteTrack: (peerId: string, track: MediaStreamTrack) => void
+  /** Forgets the room's participants, their media and ICE servers. Local media is untouched. */
   clearPeers: () => void
 
   enableMic: () => Promise<AcquireResult>
@@ -141,6 +152,7 @@ export const usePeerStore = create<PeerState>()((set, get) => {
     inRoom: false,
     peers: new Map(),
     iceServers: [],
+    remoteStreams: new Map(),
     localStream: null,
     facingMode: 'user',
     preferredAudioInputId: saved.audioInputId ?? '',
@@ -165,12 +177,33 @@ export const usePeerStore = create<PeerState>()((set, get) => {
         if (!state.peers.has(id)) return state
         const peers = new Map(state.peers)
         peers.delete(id)
-        return { peers }
+        const remoteStreams = new Map(state.remoteStreams)
+        remoteStreams.delete(id)
+        return { peers, remoteStreams }
       }),
 
     setIceServers: (iceServers) => set({ iceServers }),
 
-    clearPeers: () => set({ inRoom: false, peers: new Map(), iceServers: [] }),
+    setRemoteTrack: (peerId, track) =>
+      set((state) => {
+        const kept = state.remoteStreams.get(peerId)?.getTracks().filter((t) => t.kind !== track.kind) ?? []
+        const remoteStreams = new Map(state.remoteStreams)
+        remoteStreams.set(peerId, new MediaStream([...kept, track]))
+        return { remoteStreams }
+      }),
+
+    removeRemoteTrack: (peerId, track) =>
+      set((state) => {
+        const current = state.remoteStreams.get(peerId)
+        if (!current?.getTracks().includes(track)) return state
+        const kept = current.getTracks().filter((t) => t !== track)
+        const remoteStreams = new Map(state.remoteStreams)
+        if (kept.length > 0) remoteStreams.set(peerId, new MediaStream(kept))
+        else remoteStreams.delete(peerId)
+        return { remoteStreams }
+      }),
+
+    clearPeers: () => set({ inRoom: false, peers: new Map(), remoteStreams: new Map(), iceServers: [] }),
 
     enableMic: async () => {
       const generation = ++audioGeneration
@@ -281,7 +314,7 @@ export const usePeerStore = create<PeerState>()((set, get) => {
       audioGeneration++
       videoGeneration++
       get().localStream?.getTracks().forEach((t) => t.stop())
-      set({ inRoom: false, peers: new Map(), iceServers: [], localStream: null })
+      set({ inRoom: false, peers: new Map(), remoteStreams: new Map(), iceServers: [], localStream: null })
     },
   }
 })
