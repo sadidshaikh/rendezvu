@@ -118,6 +118,10 @@ async function route(req: IncomingMessage, res: ServerResponse, url: URL, deps: 
     sendError(res, 400, 'INVALID_REQUEST', 'sessionDescription with type and sdp is required')
     return
   }
+  if (subPath === 'tracks/new' && !pullsStayInRoom(body, entry.roomId, deps.sessions)) {
+    sendError(res, 403, 'TRACK_NOT_IN_ROOM', 'That track is not in this meeting.')
+    return
+  }
 
   const ctx = { room: entry.roomId, peer: peerId, route: subPath }
   const clientGone = watchClientGone(res)
@@ -126,7 +130,7 @@ async function route(req: IncomingMessage, res: ServerResponse, url: URL, deps: 
     if (subPath === 'tracks/new' && isObject(body) && body.sessionDescription) {
       // Accepted, not live: the browser still has to apply the answer and
       // connect. It announces only after that, so a publish logged here with
-      // no sfu_announce soon after means the browser never got there.
+      // no sfu_tracks soon after means the browser never got there.
       const tracks = Array.isArray(body.tracks) ? body.tracks.length : 0
       log('sfu_publish_accepted', { room: entry.roomId, peer: peerId, session: sessionId, tracks })
     }
@@ -225,6 +229,21 @@ function allowRate(req: IncomingMessage, res: ServerResponse, url: URL, perPeer:
 function hasSessionDescription(body: unknown): boolean {
   const desc = isObject(body) ? body.sessionDescription : undefined
   return isObject(desc) && typeof desc.type === 'string' && desc.type !== '' && typeof desc.sdp === 'string' && desc.sdp !== ''
+}
+
+/**
+ * Cloudflare lets any session in our app pull any other session's track,
+ * across all rooms. Session ids reach every participant's browser, so a
+ * leaked id from one meeting must not be usable to watch another: every
+ * remote pull has to name a publish session registered in this room.
+ */
+function pullsStayInRoom(body: unknown, roomId: string, sessions: SfuSessionRegistry): boolean {
+  const tracks = isObject(body) && Array.isArray(body.tracks) ? (body.tracks as unknown[]) : []
+  return tracks.every((t) => {
+    if (!isObject(t) || t.location !== 'remote') return true
+    const source = typeof t.sessionId === 'string' ? sessions.lookup(t.sessionId) : undefined
+    return source?.kind === 'publish' && source.roomId === roomId
+  })
 }
 
 function isJson(text: string): boolean {

@@ -98,7 +98,7 @@ function handleMessage(peer: Peer, env: Envelope, { hub, registry, sfuSessions }
       handleJoin(peer, env, hub, registry)
       return
     case 'sfu-announce':
-      handleSfuAnnounce(peer, env, sfuSessions)
+      handleSfuAnnounce(peer, env, hub, sfuSessions)
       return
     case 'leave':
       hub.leave(peer)
@@ -142,9 +142,9 @@ function handleJoin(peer: Peer, env: Envelope, hub: Hub, registry: InstantRoomRe
 
 /**
  * The full set of tracks this peer has published, sent once Cloudflare has
- * confirmed them. Phase 4 checks and logs it; Phase 5 stores it and tells the room.
+ * confirmed them. Stored on the room and passed to everyone else in it.
  */
-function handleSfuAnnounce(peer: Peer, env: Envelope, sfuSessions: SfuSessionRegistry): void {
+function handleSfuAnnounce(peer: Peer, env: Envelope, hub: Hub, sfuSessions: SfuSessionRegistry): void {
   if (!peer.roomId) {
     sendError(peer, 'join first')
     return
@@ -156,7 +156,7 @@ function handleSfuAnnounce(peer: Peer, env: Envelope, sfuSessions: SfuSessionReg
     sendError(peer, 'invalid sfu-announce')
     return
   }
-  log('sfu_announce', { peer: peer.id, room: peer.roomId, session: data.sessionId, tracks: data.tracks.length })
+  hub.announceTracks(peer, data)
 }
 
 /** Null unless every field is present and within bounds. An empty track list is valid: it withdraws the session. */

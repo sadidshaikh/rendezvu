@@ -1,6 +1,6 @@
 # Phase 5: Subscribe, the first real multi-person call
 
-Status: **frontend built**; backend next. Backend: you · Frontend: Claude
+Status: **built**. Backend: Claude (on request) · Frontend: Claude
 
 ## Goal
 
