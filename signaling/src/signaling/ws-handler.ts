@@ -146,7 +146,7 @@ function handleJoin(peer: Peer, env: Envelope, hub: Hub, registry: InstantRoomRe
  */
 function handleSfuAnnounce(peer: Peer, env: Envelope, hub: Hub, sfuSessions: SfuSessionRegistry): void {
   if (!peer.roomId) {
-    sendError(peer, 'join first')
+    sendError(peer, 'join a room before announcing tracks', 'NOT_IN_ROOM')
     return
   }
   const data = readSfuTracks(env.data)

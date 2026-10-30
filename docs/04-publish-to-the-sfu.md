@@ -184,7 +184,7 @@ Requests without a `peerId` skip the peer bucket and fall back to the address bu
 
 Phase 4 only **validates and logs** it. Storing it and telling the room is Phase 5.
 
-- Must be in a room, else `error` "join first".
+- Must be in a room, else `error` `NOT_IN_ROOM` "join a room before announcing tracks".
 - `sessionId`: a string, 1–256 characters. `tracks`: an array of at most **8**. Each `trackName`: a string, 1–256 characters. Anything else → `error` "invalid sfu-announce".
 - *Addition:* the `sessionId` must be in the SFU registry as **this peer's** publish session. Otherwise someone could announce another person's tracks under their own name. Cheap, since the registry already exists.
 - Log `sfu_announce peer=… room=… session=… tracks=2`.

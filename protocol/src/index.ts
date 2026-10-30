@@ -67,7 +67,7 @@ export interface PeerLeftData {
 }
 
 /** Codes the client acts on. Errors without a code are informational. */
-export type SignalingErrorCode = 'ROOM_UNAVAILABLE' | 'ROOM_EXPIRED'
+export type SignalingErrorCode = 'ROOM_UNAVAILABLE' | 'ROOM_EXPIRED' | 'NOT_IN_ROOM'
 
 export interface ErrorData {
   message: string

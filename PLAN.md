@@ -112,7 +112,7 @@ Phase 0 sets up the project. Phases 1–5 get a real multi-person call working, 
 
 **You'll learn:** connection lifecycle (open → join → leave/close), why cleanup must run on both `leave` and `close`, and why server-side state is the source of truth.
 
-**Done when:** three tabs join the same room and each shows the other two. Closing a tab removes it from the others within a second.
+**Done when:** three tabs join the same room and each shows the other two. Closing a tab removes it from the others within a second. ✅ Done (see `docs/01-rooms-and-presence.md`).
 
 ---
 
@@ -127,7 +127,7 @@ Phase 0 sets up the project. Phases 1–5 get a real multi-person call working, 
 
 **You'll learn:** tracks vs streams, device ids, and why "what the user wants" (intent) is stored separately from "what's actually running" (live tracks).
 
-**Done when:** you can switch camera and mic in the lobby, see the meter move, deny permission and get a clear message, then join the room from Phase 1 with your name.
+**Done when:** you can switch camera and mic in the lobby, see the meter move, deny permission and get a clear message, then join the room from Phase 1 with your name. ✅ Done (see `docs/02-local-media-and-lobby.md`).
 
 ---
 
@@ -144,7 +144,7 @@ Phase 0 sets up the project. Phases 1–5 get a real multi-person call working, 
 
 **You'll learn:** short-lived credentials, the STUN vs TURN difference in practice, and what happens when you force `iceTransportPolicy: 'relay'`.
 
-**Done when:** a quick test page connects with `relay` only, and the selected candidate type shows `relay`.
+**Done when:** a quick test page connects with `relay` only, and the selected candidate type shows `relay`. ✅ Built and passing on the laptop (see `docs/03-ice-servers-and-turn.md`). Mobile-data check waits for Phase 14.
 
 ---
 
@@ -169,7 +169,7 @@ Cloudflare's JSON errors are forwarded unchanged so the client can read them. Ev
 
 **You'll learn:** what a "session" and a "track" are to an SFU, why the offer goes to Cloudflare instead of another person, and why ICE candidates never pass through our server (Cloudflare's answer already lists its addresses).
 
-**Done when:** your video loops back through Cloudflare and `chrome://webrtc-internals` shows bytes going up.
+**Done when:** your video loops back through Cloudflare and `chrome://webrtc-internals` shows bytes going up. ✅ Built; the loopback passes (see `docs/04-publish-to-the-sfu.md`). Mobile-data check waits for Phase 14.
 
 ---
 
@@ -188,7 +188,7 @@ Cloudflare's JSON errors are forwarded unchanged so the client can read them. Ev
 
 **You'll learn:** the difference between telling the room once (an event) and storing the current state so it can be resent (level-triggered state), which becomes the key idea in Phase 8.
 
-**Done when:** three devices (one on mobile data) are in one call, everyone sees and hears everyone, and someone joining late sees all the existing people.
+**Done when:** three devices (one on mobile data) are in one call, everyone sees and hears everyone, and someone joining late sees all the existing people. ✅ Built; tested with tabs and a phone on Wi-Fi (see `docs/05-subscribe.md`). Mobile-data check waits for Phase 14.
 
 > **Milestone 1: a working group video call.**
 
@@ -201,6 +201,7 @@ Cloudflare's JSON errors are forwarded unchanged so the client can read them. Ev
 - Switching devices during the call, flipping between front and back camera on phones, and choosing the speaker output.
 - Screen share with `getDisplayMedia`, published as its own track, with "stop sharing" detection.
 - `peer-state {audio, video, speaking, screenSharing}` over the WebSocket, so others show "muted" or an avatar instead of a frozen frame.
+- A bounded send queue per connection (Node, you). Room events (`joined`, `peer-joined`, `peer-left`, `sfu-tracks`) wait up to 2 s for space, then log `signaling_send_timeout`; `peer-state` is best effort and dropped if the queue is full. Today the WebSocket library buffers without limit until the 60 s idle timeout, so one slow phone would make the server hold every update sent to it. `peer-state` is the first message frequent enough for that to matter.
 
 **Why now:** With the call working, these are the features people touch every minute. `replaceTrack` vs renegotiation is the key lesson: swapping a track is instant, while adding a new one needs a new SDP round trip.
 
