@@ -336,6 +336,8 @@ Cloudflare's JSON errors are forwarded unchanged so the client can read them. Ev
 
 **Done when:** a Grafana dashboard shows TTFM p95, connection success rate and repair counts for a test call.
 
+**Then:** use the setup-phase timings to work through the [optimisation backlog](#8-optimisation-backlog).
+
 ---
 
 ### Phase 14: Deploy and test for real
@@ -424,3 +426,34 @@ Built up phase by phase. Shared as TypeScript types between `client/` and `signa
 - **Backend (`signaling/`, later `api/`): you write it.** Claude writes the requirements and the message shapes, answers questions and reviews your code.
 - **Frontend (`client/`): Claude builds it, you review it.** You decide what the call should do; Claude handles the details.
 - **No phase gets skipped.** Each one fixes a problem you'll have just seen in the previous phase, which is what makes the "why" obvious.
+
+## 8. Optimisation backlog
+
+Things that work but could be faster. None is scheduled yet; each waits for real numbers (Phase 13's setup-phase timings, or temporary console timings before that) so we fix the slowest step, not the one we guess.
+
+### Video takes a few seconds to appear after someone joins (seen in Phase 5)
+
+Everything after a join runs one step at a time, and each step is a round trip of 100–800 ms:
+
+```
+Publisher                                       Subscriber
+1. join → joined
+2. /ice-servers      (our server asks Cloudflare for TURN)
+3. sessions/new
+4. tracks/new        (push)
+5. connect to Cloudflare (ICE + DTLS)
+6. confirmed → sfu-announce ───────────────►  7. sfu-tracks arrives
+                                              8. sessions/new  (a new connection for this person)
+                                              9. tracks/new (pull) + renegotiate
+                                             10. connect to Cloudflare (ICE + DTLS)
+                                             11. first full video frame
+```
+
+| Suspect | Why it costs time | Possible fix | Trade-off |
+|---|---|---|---|
+| Steps 8–10: a new subscribe connection per person | The subscriber connects from scratch for each publisher; probably the biggest share | Open a subscribe connection right after joining, before anyone announces; or one shared subscribe connection for everyone | A shared connection loses Phase 5's isolation (one person's renegotiation can disturb another's) |
+| Step 2: `/ice-servers` blocks everything | Our server calls Cloudflare's TURN API on every join, and nothing starts until it answers | Reuse credentials per room on the server for their lifetime; or start with STUN and add TURN when it arrives | Starting without TURN fails at first on strict networks |
+| Step 6: wait for the confirmation | Deliberate: nobody pulls a track that isn't live yet | Keep | Pulling earlier only fails and retries |
+| Step 11: first full video frame | Cloudflare has to ask the publisher for one | Measure first (`framesDecoded` and the time to the first frame in `getStats()`) | Usually small |
+
+**First step when we pick this up:** temporary console timings for steps 1–11 in development, one join, then fix the slowest one or two.
