@@ -234,6 +234,7 @@ Cloudflare's JSON errors are forwarded unchanged so the client can read them. Ev
 - **presenceId**: a stable id the browser keeps across reconnects in `sessionStorage`, so each tab is its own person. When it rejoins, the server replaces the old entry instead of showing a duplicate person.
 - `sync` → `room-snapshot {version, peers, tracks}`: the whole room state with a version number. Sent on request and pushed on a timer every 15 s.
 - Version numbers on `sfu-tracks`, so clients ignore stale updates.
+- Cloudflare sessions owned by the `presenceId` instead of the peer id, so a reconnect can keep using them. Sessions of a socket that closed without `leave` are kept for 2 minutes.
 
 **Build (client):**
 - Reconnect with backoff and a "Reconnecting…" banner.

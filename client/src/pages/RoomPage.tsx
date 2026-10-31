@@ -28,7 +28,7 @@ export default function RoomPage() {
   const [roomError, setRoomError] = useState<string | null>(null)
 
   const inCall = stage === 'call'
-  const { client, connState } = useSignaling(inCall)
+  const { client, connState, reconnectAttempt } = useSignaling(inCall)
 
   // Media keeps running from lobby to call; it is released when the user
   // leaves, or navigates away from the room page altogether.
@@ -63,7 +63,14 @@ export default function RoomPage() {
   if (stage === 'call') {
     return (
       <CallErrorBoundary onLeave={handleLeave}>
-        <MeetCall meetCode={meetCode} userName={userName} client={client} connState={connState} onLeave={handleLeave} />
+        <MeetCall
+          meetCode={meetCode}
+          userName={userName}
+          client={client}
+          connState={connState}
+          reconnectAttempt={reconnectAttempt}
+          onLeave={handleLeave}
+        />
       </CallErrorBoundary>
     )
   }

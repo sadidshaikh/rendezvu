@@ -19,6 +19,8 @@ export type MsgType =
   | 'sfu-announce'
   | 'sfu-tracks'
   | 'peer-state'
+  | 'sync'
+  | 'room-snapshot'
 
 /**
  * Every WebSocket message, in both directions, is one JSON envelope.
@@ -49,6 +51,12 @@ export interface JoinData {
   name: string
   audio: boolean
   video: boolean
+  /**
+   * The same for every connection this browser tab makes, so a reconnect
+   * replaces the tab's old entry instead of adding a second person. Never
+   * sent on to anyone else: it also proves which Cloudflare sessions are ours.
+   */
+  presenceId?: string
 }
 
 /** server → joining client: everyone already in the room (never yourself). */
@@ -107,6 +115,30 @@ export interface SfuTrackInfo {
 export interface SfuTracksData {
   sessionId: string
   tracks: SfuTrackInfo[]
+  /**
+   * server → client only: the room version this change landed at, so it can
+   * be ordered against a snapshot. Missing on the join replay, which sends
+   * stored sets in no particular order.
+   */
+  version?: number
+}
+
+export interface RoomSnapshotPeerTracks {
+  peerId: string
+  sessionId: string
+  tracks: SfuTrackInfo[]
+}
+
+/**
+ * server → client `room-snapshot`: the whole room, everyone present
+ * (including the receiver) and every stored track set. Sent after `joined`,
+ * in reply to `sync`, and every 15 s to rooms where someone publishes. Any
+ * message the client missed, the next snapshot corrects.
+ */
+export interface RoomSnapshotData {
+  version: number
+  peers: PeerInfo[]
+  tracks: RoomSnapshotPeerTracks[]
 }
 
 // ─── HTTP API ──────────────────────────────────────────────────────────────

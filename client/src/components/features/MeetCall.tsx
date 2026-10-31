@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Loader2, Monitor, PhoneOff, Settings } from 'lucide-react'
 import { CameraButton } from '@/components/ui/CameraButton'
+import { ConnectionBanner } from '@/components/ui/ConnectionBanner'
 import { DeviceErrorNotice } from '@/components/ui/DeviceErrorNotice'
 import { FlipCameraButton } from '@/components/ui/FlipCameraButton'
 import { MicButton } from '@/components/ui/MicButton'
@@ -24,6 +25,7 @@ interface MeetCallProps {
   userName: string
   client: SignalingClient | null
   connState: ConnState
+  reconnectAttempt: number
   onLeave: () => void
 }
 
@@ -32,7 +34,7 @@ interface MeetCallProps {
  * their `peer-state`, a hidden audio element per remote person, and the
  * call controls.
  */
-export default function MeetCall({ meetCode, userName, client, connState, onLeave }: MeetCallProps) {
+export default function MeetCall({ meetCode, userName, client, connState, reconnectAttempt, onLeave }: MeetCallProps) {
   const inRoom = usePeerStore((s) => s.inRoom)
   const peers = usePeerStore((s) => s.peers)
   const localStream = usePeerStore((s) => s.localStream)
@@ -93,12 +95,10 @@ export default function MeetCall({ meetCode, userName, client, connState, onLeav
         </div>
       </header>
 
+      <ConnectionBanner connState={connState} reconnectAttempt={reconnectAttempt} />
+
       <main className="flex min-h-0 flex-1 flex-col px-3">
-        {connState === 'disconnected' ? (
-          <Centered>
-            <StatusMessage title="Lost connection to the server" body="Leave and rejoin to continue." />
-          </Centered>
-        ) : !inRoom ? (
+        {!inRoom ? (
           <Centered>
             <div role="status" className="flex items-center gap-3 text-sm text-muted-foreground">
               <Loader2 className="size-4 animate-spin" aria-hidden="true" />
@@ -190,13 +190,4 @@ export default function MeetCall({ meetCode, userName, client, connState, onLeav
 
 function Centered({ children }: { children: ReactNode }) {
   return <div className="flex flex-1 items-center justify-center">{children}</div>
-}
-
-function StatusMessage({ title, body }: { title: string; body: string }) {
-  return (
-    <div role="alert" className="experience-card max-w-sm p-6 text-center">
-      <p className="font-semibold text-foreground">{title}</p>
-      <p className="mt-1 text-sm text-muted-foreground">{body}</p>
-    </div>
-  )
 }

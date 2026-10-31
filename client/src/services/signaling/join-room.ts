@@ -32,9 +32,13 @@ export function joinRoom(code: string, name: string): Promise<SignalingClient> {
     const timer = setTimeout(() => fail('Timed out joining the room.'), JOIN_TIMEOUT_MS)
     client.on('joined', onJoined)
     client.on('error', onError)
-    client.onStateChange = (state) => {
-      if (state === 'connected') client.send<JoinData>('join', { name, audio: false, video: false }, { room: code })
-      if (state === 'disconnected') fail('Could not reach the signaling server.')
+    client.onStateChange = (state, attempt) => {
+      if (state === 'connected') {
+        // presenceId too, or the server can't match our /sfu requests to us.
+        client.send<JoinData>('join', { name, audio: false, video: false, presenceId: client.getPresenceId() }, { room: code })
+      }
+      // A check reports the first failure instead of retrying like a call.
+      if (state !== 'connected' && attempt > 0) fail('Could not reach the signaling server.')
     }
     client.connect()
   })

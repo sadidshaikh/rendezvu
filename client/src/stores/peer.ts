@@ -28,6 +28,12 @@ const VIDEO_HINTS = { width: { ideal: 960 }, height: { ideal: 540 }, frameRate: 
 interface PeerState {
   /** True once the server has acknowledged our join with `joined`. */
   inRoom: boolean
+  /**
+   * Goes up on every `joined`, the first and each one after a reconnect.
+   * Whatever the server forgot with the old connection (our `peer-state`) is
+   * sent again when it changes.
+   */
+  joinCount: number
   peers: Map<string, RemotePeer>
   /** STUN/TURN servers for this call, fetched after `joined`. Empty until then, or if the fetch failed. */
   iceServers: IceServer[]
@@ -56,7 +62,10 @@ interface PeerState {
   preferredVideoInputId: string
   preferredAudioOutputId: string
 
+  /** From `joined`: everyone else in the room. */
   setRoster: (peers: PeerInfo[]) => void
+  /** From `room-snapshot`: the room as it is now, minus us. Adds, removes and updates without counting as a join. */
+  syncRoster: (peers: PeerInfo[]) => void
   addPeer: (peer: PeerInfo) => void
   removePeer: (id: string) => void
   /** From `peer-state`: the person's full current state. */
@@ -93,6 +102,16 @@ function streamOf(tracks: MediaStreamTrack[]): MediaStream | null {
 
 function remotePeer(p: PeerInfo): RemotePeer {
   return { id: p.id, name: p.name, audio: p.audio, video: p.video, screenSharing: p.screenSharing ?? false, speaking: false }
+}
+
+/**
+ * The roster as `peers` says, keeping each known person's `speaking` (it
+ * isn't stored on the server) and dropping the media of anyone gone.
+ */
+function rosterFrom(state: Pick<PeerState, 'peers' | 'remoteStreams'>, peers: PeerInfo[]) {
+  const next = new Map(peers.map((p) => [p.id, { ...remotePeer(p), speaking: state.peers.get(p.id)?.speaking ?? false }]))
+  const remoteStreams = new Map([...state.remoteStreams].filter(([id]) => next.has(id)))
+  return { peers: next, remoteStreams }
 }
 
 function errorName(error: unknown): string {
@@ -171,6 +190,7 @@ export const usePeerStore = create<PeerState>()((set, get) => {
 
   return {
     inRoom: false,
+    joinCount: 0,
     peers: new Map(),
     iceServers: [],
     remoteStreams: new Map(),
@@ -183,10 +203,9 @@ export const usePeerStore = create<PeerState>()((set, get) => {
     preferredAudioOutputId: saved.audioOutputId ?? '',
 
     setRoster: (peers) =>
-      set({
-        inRoom: true,
-        peers: new Map(peers.map((p) => [p.id, remotePeer(p)])),
-      }),
+      set((state) => ({ ...rosterFrom(state, peers), inRoom: true, joinCount: state.joinCount + 1 })),
+
+    syncRoster: (peers) => set((state) => rosterFrom(state, peers)),
 
     addPeer: (peer) =>
       set((state) => {

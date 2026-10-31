@@ -16,6 +16,7 @@ import { usePeerStore } from '@/stores/peer'
  */
 export function useCallControls(client: SignalingClient | null, roomId: string) {
   const inRoom = usePeerStore((s) => s.inRoom)
+  const joinCount = usePeerStore((s) => s.joinCount)
   const localStream = usePeerStore((s) => s.localStream)
   const screenTrack = usePeerStore((s) => s.screenTrack)
   const isMuted = useMeetStore((s) => s.isMuted)
@@ -150,9 +151,10 @@ export function useCallControls(client: SignalingClient | null, roomId: string) 
     return () => listeners.forEach((remove) => remove())
   }, [localStream])
 
-  // The full state, whenever any part of it changes. Sent once on arrival too,
-  // which covers a toggle made while the join was still on its way.
-  const lastSent = useRef<string | null>(null)
+  // The full state, whenever any part of it changes. Sent once after every
+  // join too: on arrival it covers a toggle made while the join was on its
+  // way, and after a reconnect it restores what the server forgot.
+  const lastSent = useRef<{ joinCount: number; json: string } | null>(null)
   useEffect(() => {
     if (!client || !inRoom) {
       lastSent.current = null
@@ -165,10 +167,10 @@ export function useCallControls(client: SignalingClient | null, roomId: string) 
       screenSharing: isSharing,
     }
     const json = JSON.stringify(state)
-    if (json === lastSent.current) return
-    lastSent.current = json
+    if (lastSent.current?.joinCount === joinCount && lastSent.current.json === json) return
+    lastSent.current = { joinCount, json }
     client.send<PeerStateData>('peer-state', state, { room: roomId })
-  }, [client, inRoom, roomId, isMuted, isVideoOff, speaking, isSharing])
+  }, [client, inRoom, joinCount, roomId, isMuted, isVideoOff, speaking, isSharing])
 
   return {
     isMuted,

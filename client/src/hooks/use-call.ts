@@ -8,6 +8,7 @@ import type {
   PeerJoinedData,
   PeerLeftData,
   PeerStateData,
+  RoomSnapshotData,
   SfuTracksData,
 } from '@rendezvu/protocol'
 import { playPeerJoined, playPeerLeft, playScreenShareStart, playScreenShareStop } from '@/lib/sounds'
@@ -15,6 +16,7 @@ import { fetchIceServers, startIceServerKeepalive } from '@/services/api/ice'
 import type { SignalingClient } from '@/services/signaling/client'
 import { CallReconciler } from '@/services/webrtc/call-reconciler'
 import { SfuSession } from '@/services/webrtc/sfu-session'
+import { useMeetStore } from '@/stores/meet'
 import { usePeerStore } from '@/stores/peer'
 
 interface Args {
@@ -79,6 +81,7 @@ export function useCall({ client, roomId, enabled, userName, initialAudio, initi
       sfu = new SfuSession({
         roomId,
         peerId,
+        presenceId: client.getPresenceId(),
         iceServers: servers.length > 0 ? servers : STUN_FALLBACK,
         // Sent only once Cloudflare confirms, so nobody subscribes to a track that isn't live.
         onLocalTracksChanged: (announcement) => client.send<SfuTracksData>('sfu-announce', announcement, { room: roomId }),
@@ -143,8 +146,19 @@ export function useCall({ client, roomId, enabled, userName, initialAudio, initi
       )
     }
 
+    // Resolves a wait for the next `joined`, so a reconnect only re-sends
+    // state once the server has put us back in the room.
+    let joinedCount = 0
+    let joinedWaiters: Array<{ after: number; resolve: () => void }> = []
+    const waitForJoinedAfter = (after: number) =>
+      joinedCount > after ? Promise.resolve() : new Promise<void>((resolve) => joinedWaiters.push({ after, resolve }))
+
     const handleJoined = (env: { data?: JoinedData }) => {
       store().setRoster(env.data?.peers ?? [])
+      joinedCount++
+      const ready = joinedWaiters.filter((w) => joinedCount > w.after)
+      joinedWaiters = joinedWaiters.filter((w) => joinedCount <= w.after)
+      ready.forEach((w) => w.resolve())
       if (!iceRequested) {
         iceRequested = true
         void loadIceServers()
@@ -176,8 +190,21 @@ export function useCall({ client, roomId, enabled, userName, initialAudio, initi
       const d = env.data
       // Our own tracks are never sent to us; ignore one if it ever is.
       if (!env.from || !d || env.from === client.getPeerId()) return
-      reconciler.setPeerTracks(env.from, d.sessionId, d.tracks.map((t) => t.trackName))
-      reconciler.reconcile()
+      if (reconciler.setPeerTracks(env.from, d.sessionId, d.tracks.map((t) => t.trackName), d.version)) {
+        reconciler.reconcile()
+      }
+    }
+    // The whole room: corrects any join, leave or announcement we missed,
+    // without having to know which one it was. Quietly: no sounds.
+    const handleRoomSnapshot = (env: { data?: RoomSnapshotData }) => {
+      const d = env.data
+      if (!d) return
+      const myId = client.getPeerId()
+      store().syncRoster(d.peers.filter((p) => p.id !== myId))
+      const entries = d.tracks
+        .filter((t) => t.peerId !== myId)
+        .map((t) => ({ peerId: t.peerId, sessionId: t.sessionId, trackNames: t.tracks.map((x) => x.trackName) }))
+      if (reconciler.applySnapshot(entries, d.version)) reconciler.reconcile()
     }
     const handleError = (env: { data?: ErrorData }) => {
       const d = env.data
@@ -193,10 +220,39 @@ export function useCall({ client, roomId, enabled, userName, initialAudio, initi
     client.on('peer-left', handlePeerLeft)
     client.on('peer-state', handlePeerState)
     client.on('sfu-tracks', handleSfuTracks)
+    client.on('room-snapshot', handleRoomSnapshot)
     client.on('error', handleError)
 
-    const a = joinArgs.current
-    client.send<JoinData>('join', { name: a.userName, audio: a.initialAudio, video: a.initialVideo }, { room: roomId })
+    const sendJoin = (audio: boolean, video: boolean) =>
+      client.send<JoinData>(
+        'join',
+        { name: joinArgs.current.userName, audio, video, presenceId: client.getPresenceId() },
+        { room: roomId },
+      )
+
+    // Only the WebSocket dropped. The SFU session, our publish connection and
+    // every pull carry on; tearing them down would turn a blip into an outage.
+    // The server forgot us with the old connection, so: join again, then send
+    // what it lost, then ask for the whole room.
+    let reconnectGeneration = 0
+    client.onReconnected = () => {
+      if (disposed) return
+      const generation = ++reconnectGeneration
+      reconciler.resetDesired()
+      const after = joinedCount
+      const media = useMeetStore.getState()
+      sendJoin(!media.isMuted, !media.isVideoOff)
+      void waitForJoinedAfter(after).then(() => {
+        // A newer drop started over; that sequence sends instead.
+        if (disposed || generation !== reconnectGeneration) return
+        // peer-state goes out by itself: useCallControls sends again on every join.
+        const announcement = sfu?.currentAnnouncement()
+        if (announcement) client.send<SfuTracksData>('sfu-announce', announcement, { room: roomId })
+        client.send('sync', undefined, { room: roomId })
+      })
+    }
+
+    sendJoin(joinArgs.current.initialAudio, joinArgs.current.initialVideo)
 
     return () => {
       disposed = true
@@ -210,7 +266,9 @@ export function useCall({ client, roomId, enabled, userName, initialAudio, initi
       client.off('peer-left', handlePeerLeft)
       client.off('peer-state', handlePeerState)
       client.off('sfu-tracks', handleSfuTracks)
+      client.off('room-snapshot', handleRoomSnapshot)
       client.off('error', handleError)
+      client.onReconnected = undefined
       client.send('leave', undefined, { room: roomId })
       store().clearPeers()
     }

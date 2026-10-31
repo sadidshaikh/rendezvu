@@ -9,6 +9,12 @@ export interface CallReconcilerOptions {
   onTrackGone: (peerId: string, track: MediaStreamTrack) => void
 }
 
+export interface SnapshotTracks {
+  peerId: string
+  sessionId: string
+  trackNames: string[]
+}
+
 interface DesiredTracks {
   sessionId: string
   trackNames: Set<string>
@@ -46,6 +52,18 @@ export class CallReconciler {
   private readonly opts: CallReconcilerOptions
   private readonly desired = new Map<string, DesiredTracks>()
   private readonly applied = new Map<string, AppliedTracks>()
+  /**
+   * Newest room version applied. Anything older is ignored: a snapshot sent
+   * just before someone announced would otherwise undo that announcement
+   * until the next snapshot, 15 s later.
+   */
+  private lastVersion = 0
+  /**
+   * Between a reconnect and the snapshot that follows it, `desired` is empty
+   * or half rebuilt. Pulls are added then but never dropped: dropping on a
+   * half-known room would cut pulls that still work.
+   */
+  private awaitingSnapshot = false
 
   constructor(opts: CallReconcilerOptions) {
     this.opts = opts
@@ -56,12 +74,39 @@ export class CallReconciler {
    * withdraws that session, and only that one: a late withdrawal of an old
    * session must not erase the newer set that replaced it.
    */
-  setPeerTracks(peerId: string, sessionId: string, trackNames: string[]): void {
+  setPeerTracks(peerId: string, sessionId: string, trackNames: string[], version?: number): boolean {
+    if (this.isStale(version)) return false
+    if (version) this.lastVersion = version
     if (trackNames.length === 0) {
       if (this.desired.get(peerId)?.sessionId === sessionId) this.desired.delete(peerId)
-      return
+      return true
     }
     this.desired.set(peerId, { sessionId, trackNames: new Set(trackNames) })
+    return true
+  }
+
+  /** The room's full state from `room-snapshot`. Replaces everything, which is the point. */
+  applySnapshot(entries: SnapshotTracks[], version: number): boolean {
+    if (this.isStale(version)) return false
+    this.lastVersion = version
+    this.awaitingSnapshot = false
+    this.desired.clear()
+    for (const e of entries) {
+      if (e.trackNames.length > 0) this.desired.set(e.peerId, { sessionId: e.sessionId, trackNames: new Set(e.trackNames) })
+    }
+    return true
+  }
+
+  /**
+   * Signaling reconnected. The pulls survive a WebSocket drop, so `applied`
+   * stays and the next snapshot converges onto it. The version floor resets
+   * because the room may have emptied and been recreated meanwhile, and a new
+   * room counts from 1 again.
+   */
+  resetDesired(): void {
+    this.desired.clear()
+    this.lastVersion = 0
+    this.awaitingSnapshot = true
   }
 
   removePeer(peerId: string): void {
@@ -73,6 +118,10 @@ export class CallReconciler {
     for (const [peerId, d] of this.desired) {
       if (d.sessionId === sessionId) return peerId
     }
+    // Still pulling it while the room is being re-learned after a reconnect.
+    for (const [peerId, a] of this.applied) {
+      if (a.sessionId === sessionId) return peerId
+    }
     return undefined
   }
 
@@ -83,12 +132,14 @@ export class CallReconciler {
     // Drop what's no longer wanted first, so a moved session is closed before its replacement opens.
     for (const [peerId, applied] of this.applied) {
       const desired = this.desired.get(peerId)
+      if (this.awaitingSnapshot && !desired) continue
       if (!desired || desired.sessionId !== applied.sessionId) {
         for (const name of applied.pulls.keys()) this.stopPull(peerId, applied, name)
         session.unsubscribeSession(applied.sessionId)
         this.applied.delete(peerId)
         continue
       }
+      if (this.awaitingSnapshot) continue
       for (const name of applied.pulls.keys()) {
         if (!desired.trackNames.has(name)) this.stopPull(peerId, applied, name)
       }
@@ -113,6 +164,11 @@ export class CallReconciler {
     }
     this.applied.clear()
     this.desired.clear()
+  }
+
+  // No version means the sender gave no ordering (the join replay): apply it.
+  private isStale(version: number | undefined): boolean {
+    return !!version && version < this.lastVersion
   }
 
   private startPull(session: SfuSession, peerId: string, applied: AppliedTracks, trackName: string): void {

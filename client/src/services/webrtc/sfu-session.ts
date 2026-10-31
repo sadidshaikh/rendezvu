@@ -6,7 +6,10 @@ import { createBlackVideoTrack, createSilentAudioTrack } from '@/lib/placeholder
 
 export interface SfuSessionOptions {
   roomId: string
+  /** This connection's id when the call started. Only for the server's logs; it changes on reconnect. */
   peerId: string
+  /** This tab's id, the same across reconnects. The server ties our Cloudflare sessions to it. */
+  presenceId: string
   iceServers: RTCIceServer[]
   /**
    * The full set of tracks Cloudflare has confirmed for our publish session.
@@ -74,7 +77,13 @@ export class SfuSession {
   constructor(opts: SfuSessionOptions) {
     this.opts = opts
     this.iceServers = [...opts.iceServers]
-    this.params = `roomId=${encodeURIComponent(opts.roomId)}&peerId=${encodeURIComponent(opts.peerId)}`
+    // presenceId, not the peer id, proves the sessions are ours: it survives a
+    // signaling reconnect, and nobody else in the room ever sees it.
+    this.params = [
+      `roomId=${encodeURIComponent(opts.roomId)}`,
+      `presenceId=${encodeURIComponent(opts.presenceId)}`,
+      `peerId=${encodeURIComponent(opts.peerId)}`,
+    ].join('&')
     // Constructing PartyTracks makes no request. The Cloudflare session is
     // created on the first push: an idle session with no connection is closed
     // by Cloudflare after ~30 s, which would break joining with media off.
@@ -280,6 +289,14 @@ export class SfuSession {
       remote = created
     }
     return remote
+  }
+
+  /**
+   * The set last announced, to send again after a signaling reconnect: the
+   * server dropped it with our old connection. Null if nothing is published.
+   */
+  currentAnnouncement(): SfuTracksData | null {
+    return this.lastAnnouncedJson ? (JSON.parse(this.lastAnnouncedJson) as SfuTracksData) : null
   }
 
   private emitLocalTracksChanged(): void {

@@ -113,6 +113,7 @@ export function SfuLoopbackCheck() {
         const sfu = new SfuSession({
           roomId: meetCode,
           peerId,
+          presenceId: client.getPresenceId(),
           iceServers: servers,
           onLocalTracksChanged: (a) => {
             clearTimeout(timer)
