@@ -207,7 +207,7 @@ Cloudflare's JSON errors are forwarded unchanged so the client can read them. Ev
 
 **You'll learn:** when SDP must be renegotiated and when it doesn't, and why camera state goes over signaling instead of being guessed from the video.
 
-**Done when:** toggling anything on one device updates every other device within a second, and screen share works from desktop Chrome, Firefox and Safari.
+**Done when:** toggling anything on one device updates every other device within a second, and screen share works from desktop Chrome, Firefox and Safari. ✅ Built; tested with tabs (see `docs/06-in-call-controls.md`). Device checks (Firefox, Safari, phones, unplugging) wait for your run.
 
 ---
 

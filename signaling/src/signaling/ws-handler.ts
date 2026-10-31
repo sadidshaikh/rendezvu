@@ -2,7 +2,15 @@ import type { IncomingMessage, Server } from 'node:http'
 import type { Duplex } from 'node:stream'
 import { randomBytes } from 'node:crypto'
 import { WebSocketServer, type RawData, type WebSocket } from 'ws'
-import type { Envelope, ErrorData, JoinData, SfuTrackInfo, SfuTracksData, SignalingErrorCode } from '@rendezvu/protocol'
+import type {
+  Envelope,
+  ErrorData,
+  JoinData,
+  PeerStateData,
+  SfuTrackInfo,
+  SfuTracksData,
+  SignalingErrorCode,
+} from '@rendezvu/protocol'
 import { isObject } from '../json.ts'
 import { log } from '../log.ts'
 import type { InstantRoomRegistry } from '../meets/instant-rooms.ts'
@@ -100,6 +108,10 @@ function handleMessage(peer: Peer, env: Envelope, { hub, registry, sfuSessions }
     case 'sfu-announce':
       handleSfuAnnounce(peer, env, hub, sfuSessions)
       return
+    case 'peer-state':
+      // Not in a room: a state message racing a leave is normal, not worth an error.
+      if (peer.roomId) hub.updateState(peer, readPeerState(env.data))
+      return
     case 'leave':
       hub.leave(peer)
       return
@@ -173,6 +185,17 @@ function readSfuTracks(data: unknown): SfuTracksData | null {
 
 function isSfuId(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= MAX_SFU_ID_LENGTH
+}
+
+/** Anything but `true` counts as false. Unknown fields are dropped, so only these four are passed on. */
+function readPeerState(data: unknown): PeerStateData {
+  const d = isObject(data) ? data : {}
+  return {
+    audio: d.audio === true,
+    video: d.video === true,
+    speaking: d.speaking === true,
+    screenSharing: d.screenSharing === true,
+  }
 }
 
 const MAX_NAME_LENGTH = 40

@@ -1,6 +1,6 @@
 # Phase 6: In-call controls and shared status
 
-Status: **frontend built**; backend next. Backend: you · Frontend: Claude
+Status: **built**. Backend: Claude (on request) · Frontend: Claude
 
 ## Goal
 
@@ -102,6 +102,7 @@ Replaces `Peer.sendRaw` writing straight to the socket.
 - `sendBestEffort`: if the queue is full, drop the message at once. No log.
 - A single write that takes longer than **10 s** means the connection is dead → `terminate()` it. The normal close path then runs `leave`.
 - `broadcastExcept` waits for all receivers **in parallel**, so one slow phone delays the room by at most 2 s, not 2 s per slow person. Add `broadcastExceptBestEffort` for `peer-state`.
+- Order is kept: a message waiting for space takes the next free slot before anything sent after it, critical or best effort. Healthy receivers never wait at all, since each has its own queue.
 - Messages to a closed socket are dropped, as now.
 
 ### 5. Logs
@@ -109,6 +110,7 @@ Replaces `Peer.sendRaw` writing straight to the socket.
 ```
 peer_state room=<code> peer=<id> audio=true video=false screen=true
 signaling_send_timeout peer=<id> type=sfu-tracks
+signaling_write_timeout peer=<id>          # one write stuck for 10 s; the connection is cut
 ```
 
 ### 6. Deliberate differences from the reference

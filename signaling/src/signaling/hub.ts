@@ -1,4 +1,11 @@
-import type { JoinData, JoinedData, PeerJoinedData, PeerLeftData, SfuTracksData } from '@rendezvu/protocol'
+import type {
+  JoinData,
+  JoinedData,
+  PeerJoinedData,
+  PeerLeftData,
+  PeerStateData,
+  SfuTracksData,
+} from '@rendezvu/protocol'
 import { log } from '../log.ts'
 import type { Peer } from './peer.ts'
 import { Room } from './room.ts'
@@ -33,6 +40,8 @@ export class Hub {
     peer.name = data.name
     peer.audio = data.audio
     peer.video = data.video
+    // A share can't be running before you join.
+    peer.screenSharing = false
 
     let room = this.rooms.get(roomId)
     if (!room) {
@@ -60,7 +69,13 @@ export class Hub {
       type: 'peer-joined',
       room: roomId,
       from: peer.id,
-      data: { peerId: peer.id, name: peer.name, audio: peer.audio, video: peer.video } satisfies PeerJoinedData,
+      data: {
+        peerId: peer.id,
+        name: peer.name,
+        audio: peer.audio,
+        video: peer.video,
+        screenSharing: peer.screenSharing,
+      } satisfies PeerJoinedData,
     })
   }
 
@@ -88,6 +103,34 @@ export class Hub {
       })
     }
     room.broadcastExcept(peer.id, { type: 'sfu-tracks', room: roomId, from: peer.id, data })
+  }
+
+  /**
+   * A peer's full mic, camera and share state. Stored so `joined` and
+   * `peer-joined` carry it to later joiners; `speaking` is passed on but not
+   * stored, since it's stale a second later.
+   */
+  updateState(peer: Peer, state: PeerStateData): void {
+    const roomId = peer.roomId
+    const room = roomId ? this.rooms.get(roomId) : undefined
+    if (!roomId || !room) return
+
+    const changed =
+      peer.audio !== state.audio || peer.video !== state.video || peer.screenSharing !== state.screenSharing
+    peer.audio = state.audio
+    peer.video = state.video
+    peer.screenSharing = state.screenSharing
+    // Speaking-only changes would be most of the log.
+    if (changed) {
+      log('peer_state', {
+        room: roomId,
+        peer: peer.id,
+        audio: state.audio,
+        video: state.video,
+        screen: state.screenSharing,
+      })
+    }
+    room.broadcastExceptBestEffort(peer.id, { type: 'peer-state', room: roomId, from: peer.id, data: state })
   }
 
   /** Used by `leave`, by socket close, and by join. Safe to call when not in a room. */

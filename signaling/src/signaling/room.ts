@@ -62,10 +62,22 @@ export class Room {
     return [...this.members.values()].map((p) => p.info())
   }
 
-  broadcastExcept(exceptId: string, env: Envelope): void {
+  /**
+   * Critical. Every receiver waits in parallel, so one slow phone holds the
+   * broadcast up by at most 2 s, not 2 s per slow person.
+   */
+  async broadcastExcept(exceptId: string, env: Envelope): Promise<void> {
     const payload = JSON.stringify(env)
-    for (const peer of this.members.values()) {
-      if (peer.id !== exceptId) peer.sendRaw(payload)
-    }
+    await Promise.all(this.othersThanList(exceptId).map((peer) => peer.sendRaw(payload, env.type)))
+  }
+
+  /** Best effort, for messages the next one replaces (peer-state). */
+  broadcastExceptBestEffort(exceptId: string, env: Envelope): void {
+    const payload = JSON.stringify(env)
+    for (const peer of this.othersThanList(exceptId)) peer.sendBestEffortRaw(payload)
+  }
+
+  private othersThanList(exceptId: string): Peer[] {
+    return [...this.members.values()].filter((p) => p.id !== exceptId)
   }
 }
