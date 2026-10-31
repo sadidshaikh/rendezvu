@@ -245,7 +245,7 @@ Cloudflare's JSON errors are forwarded unchanged so the client can read them. Ev
 
 **You'll learn:** edge-triggered vs level-triggered design (the most important reliability idea in this project), heartbeats, and making repeated messages safe.
 
-**Done when:** you turn Wi-Fi off for 10 seconds on one device, turn it back on, and the call recovers without anyone rejoining or seeing a duplicate person.
+**Done when:** you turn Wi-Fi off for 10 seconds on one device, turn it back on, and the call recovers without anyone rejoining or seeing a duplicate person. ✅ Built; a forced signaling drop recovers in two tabs with no duplicate and no rebuilt publish connection (see `docs/08-signaling-that-survives-disconnects.md`). The real Wi-Fi-off check waits for your run.
 
 ---
 

@@ -1,6 +1,6 @@
 # Phase 8: Signaling that survives disconnects
 
-Status: **frontend built**; backend next. Backend: you · Frontend: Claude
+Status: **built**. Backend: Claude (on request) · Frontend: Claude
 
 ## Goal
 

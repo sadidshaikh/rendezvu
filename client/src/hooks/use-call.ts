@@ -75,12 +75,10 @@ export function useCall({ client, roomId, enabled, userName, initialAudio, initi
 
     // After the ICE fetch, so the first connection already has TURN.
     const startSfu = () => {
-      const peerId = client.getPeerId()
-      if (!peerId) return
+      if (!client.getPeerId()) return
       const servers = store().iceServers
       sfu = new SfuSession({
         roomId,
-        peerId,
         presenceId: client.getPresenceId(),
         iceServers: servers.length > 0 ? servers : STUN_FALLBACK,
         // Sent only once Cloudflare confirms, so nobody subscribes to a track that isn't live.

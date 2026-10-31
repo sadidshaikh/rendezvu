@@ -6,8 +6,6 @@ import { createBlackVideoTrack, createSilentAudioTrack } from '@/lib/placeholder
 
 export interface SfuSessionOptions {
   roomId: string
-  /** This connection's id when the call started. Only for the server's logs; it changes on reconnect. */
-  peerId: string
   /** This tab's id, the same across reconnects. The server ties our Cloudflare sessions to it. */
   presenceId: string
   iceServers: RTCIceServer[]
@@ -82,7 +80,6 @@ export class SfuSession {
     this.params = [
       `roomId=${encodeURIComponent(opts.roomId)}`,
       `presenceId=${encodeURIComponent(opts.presenceId)}`,
-      `peerId=${encodeURIComponent(opts.peerId)}`,
     ].join('&')
     // Constructing PartyTracks makes no request. The Cloudflare session is
     // created on the first push: an idle session with no connection is closed

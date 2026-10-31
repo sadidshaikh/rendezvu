@@ -93,7 +93,7 @@ function handleConnection(ws: WebSocket, deps: Deps): void {
 
   ws.on('close', () => {
     clearTimeout(idleTimer)
-    hub.leave(peer)
+    hub.leave(peer, 'disconnect')
     log('ws_disconnect', { peer: peer.id })
   })
 
@@ -113,7 +113,11 @@ function handleMessage(peer: Peer, env: Envelope, { hub, registry, sfuSessions }
       if (peer.roomId) hub.updateState(peer, readPeerState(env.data))
       return
     case 'leave':
-      hub.leave(peer)
+      hub.leave(peer, 'leave')
+      return
+    case 'sync':
+      // Not in a room: same as peer-state, a race with leave, not an error.
+      hub.sendSnapshot(peer)
       return
     case 'ping':
       peer.send({ type: 'pong' })
@@ -144,12 +148,20 @@ function handleJoin(peer: Peer, env: Envelope, hub: Hub, registry: InstantRoomRe
   }
 
   const data = readJoinData(env.data)
-  hub.join(peer, env.room, data)
+  hub.join(peer, env.room, { ...data, presenceId: data.presenceId ?? peer.id })
   // join() leaves the peer's previous room first. Rejoining a room you were
   // alone in empties it for a moment, which would start the empty-grace
   // countdown on a room that is in use.
   registry.markActive(env.room)
-  log('ws_join', { peer: peer.id, room: env.room, name: data.name, audio: data.audio, video: data.video })
+  log('ws_join', {
+    peer: peer.id,
+    // Enough to follow one tab across reconnects without logging a usable id.
+    presence: peer.presenceId.slice(0, 8),
+    room: env.room,
+    name: data.name,
+    audio: data.audio,
+    video: data.video,
+  })
 }
 
 /**
@@ -162,9 +174,9 @@ function handleSfuAnnounce(peer: Peer, env: Envelope, hub: Hub, sfuSessions: Sfu
     return
   }
   const data = readSfuTracks(env.data)
-  // The session must be this peer's own publish session. Otherwise a peer
+  // The session must be this tab's own publish session. Otherwise a peer
   // could announce someone else's tracks under its own name.
-  if (!data || !sfuSessions.isPublishSessionOf(data.sessionId, peer.id)) {
+  if (!data || !sfuSessions.isPublishSessionOf(data.sessionId, peer.presenceId)) {
     sendError(peer, 'invalid sfu-announce')
     return
   }
@@ -213,14 +225,21 @@ function cleanName(raw: unknown): string {
   return chars.slice(0, MAX_NAME_LENGTH).join('').trim()
 }
 
-/** Missing or malformed fields fall back to an empty name and media off. */
+// A UUID from the browser, but any id of reasonable length and plain
+// characters will do. It's never echoed to anyone, so the rule only keeps logs
+// and map keys sane.
+const PRESENCE_ID = /^[A-Za-z0-9-]{8,64}$/
+
+/** Missing or malformed fields fall back to an empty name, media off and no presence id. */
 function readJoinData(data: unknown): JoinData {
   const d = isObject(data) ? data : {}
-  return {
+  const join: JoinData = {
     name: cleanName(d.name),
     audio: d.audio === true,
     video: d.video === true,
   }
+  if (typeof d.presenceId === 'string' && PRESENCE_ID.test(d.presenceId)) join.presenceId = d.presenceId
+  return join
 }
 
 function parseEnvelope(raw: RawData): Envelope | null {

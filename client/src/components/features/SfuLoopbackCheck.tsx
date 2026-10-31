@@ -112,7 +112,6 @@ export function SfuLoopbackCheck() {
         const timer = setTimeout(() => reject(new Error('Cloudflare never confirmed the track. Are the /sfu routes implemented? Check the server log for sfu_error.')), PUBLISH_TIMEOUT_MS)
         const sfu = new SfuSession({
           roomId: meetCode,
-          peerId,
           presenceId: client.getPresenceId(),
           iceServers: servers,
           onLocalTracksChanged: (a) => {

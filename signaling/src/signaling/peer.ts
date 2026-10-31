@@ -15,6 +15,12 @@ const WRITE_TIMEOUT_MS = 10_000
 export class Peer {
   readonly id: string
   readonly socket: WebSocket
+  /**
+   * The browser tab behind this connection, the same across its reconnects.
+   * Set on join; until then, and for clients that don't send one, it's the
+   * peer id. Never sent to anyone else.
+   */
+  presenceId: string
   /** The room this peer is in, or null before join and after leave. */
   roomId: string | null = null
   name = ''
@@ -30,6 +36,7 @@ export class Peer {
 
   constructor(id: string, socket: WebSocket) {
     this.id = id
+    this.presenceId = id
     this.socket = socket
     socket.once('close', () => {
       this.queue.length = 0

@@ -13,19 +13,34 @@ import { iceServersHandler } from './turn/routes.ts'
 
 const SHUTDOWN_TIMEOUT_MS = 10_000
 const PRUNE_ROOMS_EVERY_MS = 60 * 60_000
+// How long a tab whose socket closed without a leave keeps its SFU sessions.
+// A phone moving between networks can take a minute to get back.
+const SFU_SESSION_GRACE_MS = 2 * 60_000
 
 const config = loadConfig()
 
 const registry = new InstantRoomRegistry(config.instantRoomTtlMs, config.instantRoomEmptyGraceMs)
 const sfuSessions = new SfuSessionRegistry()
-const hub = new Hub(
-  (roomId) => registry.markEmpty(roomId),
-  // A peer's SFU sessions can't be used by anyone once it has left.
-  (peerId) => {
-    const removed = sfuSessions.removePeer(peerId)
-    if (removed > 0) log('sfu_sessions_dropped', { peer: peerId, sessions: removed })
+const logDropped = (presenceId: string, sessions: number, reason: 'leave' | 'timeout') => {
+  if (sessions > 0) log('sfu_sessions_dropped', { presence: presenceId.slice(0, 8), sessions, reason })
+}
+const hub = new Hub({
+  onRoomEmpty: (roomId) => registry.markEmpty(roomId),
+  onPeerLeave: (peer, reason) => {
+    // A tab that said goodbye gets nothing back. One that vanished may be
+    // reconnecting, and its media to Cloudflare is still flowing meanwhile.
+    if (reason === 'leave') logDropped(peer.presenceId, sfuSessions.removePresence(peer.presenceId), 'leave')
+    else if (reason === 'disconnect') {
+      sfuSessions.scheduleDrop(peer.presenceId, SFU_SESSION_GRACE_MS, (n) => logDropped(peer.presenceId, n, 'timeout'))
+    }
   },
-)
+  onPeerJoin: (peer, roomId) => {
+    sfuSessions.cancelDrop(peer.presenceId)
+    // Sessions left behind in another room can't be used here.
+    logDropped(peer.presenceId, sfuSessions.removePresence(peer.presenceId, roomId), 'leave')
+  },
+})
+hub.startSnapshots()
 
 const { turnKeyId, turnApiToken } = config.cloudflare
 const turnClient = turnKeyId && turnApiToken ? new CloudflareTurnClient(turnKeyId, turnApiToken) : null
@@ -57,6 +72,7 @@ server.listen(config.port, config.host, () => {
 // Hosting platforms send SIGTERM before replacing the process on a deploy.
 function shutdown(signal: string) {
   console.log(`${signal} received, shutting down`)
+  hub.stopSnapshots()
   signaling.closeAll()
   server.close(() => process.exit(0))
   setTimeout(() => process.exit(1), SHUTDOWN_TIMEOUT_MS).unref()

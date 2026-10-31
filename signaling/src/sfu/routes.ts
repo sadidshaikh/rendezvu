@@ -46,7 +46,7 @@ export interface SfuDeps {
 export function sfuHandler(deps: SfuDeps): Handler {
   // /sessions/new is the one path every participant shares. A 10-person room
   // on one office network creates ~100 sessions in its first seconds, which a
-  // single per-address bucket would refuse. So a tight bucket per peer stops
+  // single per-address bucket would refuse. So a tight bucket per tab stops
   // one client stuck in a retry loop, and a wide one per address remains as
   // the abuse backstop.
   const peerLimiter = new RateLimiter(30, 40)
@@ -70,7 +70,8 @@ export function sfuHandler(deps: SfuDeps): Handler {
 async function route(req: IncomingMessage, res: ServerResponse, url: URL, deps: SfuDeps, sfu: CloudflareSfuClient): Promise<void> {
   const [sessionId = '', ...rest] = url.pathname.slice(PREFIX.length).split('/')
   const subPath = rest.join('/')
-  const peerId = url.searchParams.get('peerId') ?? ''
+  const presenceId = url.searchParams.get('presenceId') ?? ''
+  const presence = presenceId.slice(0, 8)
 
   if (sessionId === 'new' && subPath === '') {
     if (req.method !== 'POST') {
@@ -84,7 +85,7 @@ async function route(req: IncomingMessage, res: ServerResponse, url: URL, deps: 
   // Someone else's session gets the same 404 as a made-up one, so a guesser
   // learns nothing about which ids exist.
   const entry = sessionId ? deps.sessions.lookup(sessionId) : undefined
-  if (!entry || entry.peerId !== peerId) {
+  if (!entry || entry.presenceId !== presenceId) {
     sendError(res, 404, 'SESSION_NOT_FOUND', 'session not found')
     return
   }
@@ -94,7 +95,7 @@ async function route(req: IncomingMessage, res: ServerResponse, url: URL, deps: 
     // Cloudflare has no session delete: a session ends when its connection
     // closes. This only stops the id from being used here again.
     deps.sessions.remove(sessionId)
-    log('sfu_session_closed', { room: entry.roomId, peer: peerId, session: sessionId })
+    log('sfu_session_closed', { room: entry.roomId, presence, session: sessionId })
     res.writeHead(204, NO_STORE)
     res.end()
     return
@@ -123,7 +124,7 @@ async function route(req: IncomingMessage, res: ServerResponse, url: URL, deps: 
     return
   }
 
-  const ctx = { room: entry.roomId, peer: peerId, route: subPath }
+  const ctx = { room: entry.roomId, presence, route: subPath }
   const clientGone = watchClientGone(res)
   try {
     const answer = await sfu.forward(method, sessionId, subPath as SfuSubPath, body, clientGone.signal)
@@ -132,7 +133,7 @@ async function route(req: IncomingMessage, res: ServerResponse, url: URL, deps: 
       // connect. It announces only after that, so a publish logged here with
       // no sfu_tracks soon after means the browser never got there.
       const tracks = Array.isArray(body.tracks) ? body.tracks.length : 0
-      log('sfu_publish_accepted', { room: entry.roomId, peer: peerId, session: sessionId, tracks })
+      log('sfu_publish_accepted', { room: entry.roomId, presence, session: sessionId, tracks })
     }
     // partytracks calls res.json() on every response, so an empty body becomes {}.
     res.writeHead(answer.status, { 'Content-Type': 'application/json', ...NO_STORE })
@@ -146,18 +147,19 @@ async function route(req: IncomingMessage, res: ServerResponse, url: URL, deps: 
 
 async function createSession(res: ServerResponse, url: URL, deps: SfuDeps, sfu: CloudflareSfuClient): Promise<void> {
   const roomId = url.searchParams.get('roomId') ?? ''
-  const peerId = url.searchParams.get('peerId') ?? ''
+  const presenceId = url.searchParams.get('presenceId') ?? ''
+  const presence = presenceId.slice(0, 8)
   // `kind` is set by our client. Anything but "publish" is treated as a
   // subscribe session, which can't be announced to the room.
   const kind: SfuSessionKind = url.searchParams.get('kind') === 'publish' ? 'publish' : 'subscribe'
-  if (!roomId || !peerId) {
-    sendError(res, 400, 'PARAMS_REQUIRED', 'roomId and peerId are required')
+  if (!roomId || !presenceId) {
+    sendError(res, 400, 'PARAMS_REQUIRED', 'roomId and presenceId are required')
     return
   }
   if (!requireActiveRoom(res, deps.rooms, roomId)) return
-  // Until Phase 11's tokens, this is the ownership check: only a peer that is
+  // Until Phase 11's tokens, this is the ownership check: only a tab that is
   // connected and in this room right now can open sessions for it.
-  if (!deps.hub.isInRoom(peerId, roomId)) {
+  if (!deps.hub.isPresenceInRoom(presenceId, roomId)) {
     sendError(res, 403, 'NOT_IN_ROOM', 'Join the meeting first.')
     return
   }
@@ -165,17 +167,17 @@ async function createSession(res: ServerResponse, url: URL, deps: SfuDeps, sfu: 
   const clientGone = watchClientGone(res)
   try {
     const sessionId = await sfu.createSession(clientGone.signal)
-    // The peer may have left while Cloudflare was answering; its sessions
+    // The tab may have left while Cloudflare was answering; its sessions
     // were already dropped, and this one must not outlive it either.
-    if (!deps.hub.isInRoom(peerId, roomId)) {
+    if (!deps.hub.isPresenceInRoom(presenceId, roomId)) {
       sendError(res, 403, 'NOT_IN_ROOM', 'Join the meeting first.')
       return
     }
-    deps.sessions.register(sessionId, roomId, peerId, kind)
-    log('sfu_session', { room: roomId, peer: peerId, kind, session: sessionId })
+    deps.sessions.register(sessionId, roomId, presenceId, kind)
+    log('sfu_session', { room: roomId, presence, kind, session: sessionId })
     sendJson(res, 200, { sessionId }, NO_STORE)
   } catch (err) {
-    sendUpstreamError(res, err, clientGone.signal.aborted, { room: roomId, peer: peerId, route: 'sessions/new' })
+    sendUpstreamError(res, err, clientGone.signal.aborted, { room: roomId, presence, route: 'sessions/new' })
   } finally {
     clientGone.release()
   }
@@ -190,7 +192,7 @@ function sendUpstreamError(
   res: ServerResponse,
   err: unknown,
   clientLeft: boolean,
-  ctx: { room: string; peer: string; route: string },
+  ctx: { room: string; presence: string; route: string },
 ): void {
   if (clientLeft) {
     log('sfu_error', { ...ctx, error: 'aborted' })
@@ -211,10 +213,10 @@ function sendUpstreamError(
 }
 
 function allowRate(req: IncomingMessage, res: ServerResponse, url: URL, perPeer: RateLimiter, perAddress: RateLimiter): boolean {
-  // Requests without a peerId skip the peer bucket; the address bucket still applies.
-  const peerId = url.searchParams.get('peerId')
+  // Requests without a presenceId skip the per-tab bucket; the address bucket still applies.
+  const presenceId = url.searchParams.get('presenceId')
   const decisions = [
-    peerId ? perPeer.take(`${url.pathname}|peer|${peerId}`) : { allowed: true as const },
+    presenceId ? perPeer.take(`${url.pathname}|presence|${presenceId}`) : { allowed: true as const },
     perAddress.take(`${url.pathname}|addr|${clientIp(req)}`),
   ]
   for (const decision of decisions) {
