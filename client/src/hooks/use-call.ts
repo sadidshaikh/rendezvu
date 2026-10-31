@@ -1,6 +1,15 @@
 import { useEffect, useRef } from 'react'
 import { toast } from 'sonner'
-import type { ErrorData, IceServer, JoinData, JoinedData, PeerJoinedData, PeerLeftData, SfuTracksData } from '@rendezvu/protocol'
+import type {
+  ErrorData,
+  IceServer,
+  JoinData,
+  JoinedData,
+  PeerJoinedData,
+  PeerLeftData,
+  PeerStateData,
+  SfuTracksData,
+} from '@rendezvu/protocol'
 import { fetchIceServers, startIceServerKeepalive } from '@/services/api/ice'
 import type { SignalingClient } from '@/services/signaling/client'
 import { CallReconciler } from '@/services/webrtc/call-reconciler'
@@ -77,11 +86,16 @@ export function useCall({ client, roomId, enabled, userName, initialAudio, initi
         onConnectionStateChange: (state) => console.info('[sfu] publish connection', state),
       })
       const session = sfu
+      // Device actions send placeholders through it from now on.
+      store().setSfuSession(session)
       // Joining with both off publishes nothing and creates no Cloudflare session.
       const publishLive = (stream: MediaStream | null) => {
         if (stream) session.publish(stream)
       }
       publishLive(store().localStream)
+      // A share started in the first moments of the call, before this session existed.
+      const { screenTrack } = store()
+      if (screenTrack) session.publish(new MediaStream([screenTrack]))
       // A device switch replaces localStream; publish swaps the track on the existing sender.
       stopPublishing = usePeerStore.subscribe((state, prev) => {
         if (state.localStream !== prev.localStream) publishLive(state.localStream)
@@ -138,7 +152,11 @@ export function useCall({ client, roomId, enabled, userName, initialAudio, initi
     const handlePeerJoined = (env: { data?: PeerJoinedData }) => {
       const d = env.data
       if (!d) return
-      store().addPeer({ id: d.peerId, name: d.name, audio: d.audio, video: d.video })
+      store().addPeer({ id: d.peerId, name: d.name, audio: d.audio, video: d.video, screenSharing: d.screenSharing })
+    }
+    const handlePeerState = (env: { from?: string; data?: PeerStateData }) => {
+      if (!env.from || !env.data) return
+      store().updatePeerState(env.from, env.data)
     }
     const handlePeerLeft = (env: { data?: PeerLeftData }) => {
       if (!env.data) return
@@ -165,6 +183,7 @@ export function useCall({ client, roomId, enabled, userName, initialAudio, initi
     client.on('joined', handleJoined)
     client.on('peer-joined', handlePeerJoined)
     client.on('peer-left', handlePeerLeft)
+    client.on('peer-state', handlePeerState)
     client.on('sfu-tracks', handleSfuTracks)
     client.on('error', handleError)
 
@@ -176,10 +195,12 @@ export function useCall({ client, roomId, enabled, userName, initialAudio, initi
       stopIceKeepalive?.()
       stopPublishing?.()
       reconciler.dispose()
+      if (store().sfuSession === sfu) store().setSfuSession(null)
       sfu?.destroy()
       client.off('joined', handleJoined)
       client.off('peer-joined', handlePeerJoined)
       client.off('peer-left', handlePeerLeft)
+      client.off('peer-state', handlePeerState)
       client.off('sfu-tracks', handleSfuTracks)
       client.off('error', handleError)
       client.send('leave', undefined, { room: roomId })

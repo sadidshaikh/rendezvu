@@ -2,6 +2,7 @@ import { BehaviorSubject, of, type Subscription } from 'rxjs'
 import { PartyTracks } from 'partytracks/client'
 import type { SfuTracksData } from '@rendezvu/protocol'
 import { httpServerUri } from '@/lib/config'
+import { createBlackVideoTrack, createSilentAudioTrack } from '@/lib/placeholder-tracks'
 
 export interface SfuSessionOptions {
   roomId: string
@@ -58,6 +59,9 @@ export class SfuSession {
   // kind → subject feeding that kind's push. A new value swaps the track on
   // the existing sender, with no renegotiation.
   private readonly localSubjects = new Map<string, BehaviorSubject<MediaStreamTrack>>()
+  // kind → the stand-in being sent while that device is off. Lives exactly as
+  // long as it is the track being sent.
+  private readonly placeholders = new Map<string, MediaStreamTrack>()
   private readonly pushSubs = new Map<string, Subscription>()
   private readonly ackTimers = new Map<string, ReturnType<typeof setTimeout>>()
   // kind → what Cloudflare confirmed for it.
@@ -94,6 +98,23 @@ export class SfuSession {
     for (const track of stream.getTracks()) {
       if (track.readyState === 'live') this.publishTrack(track)
     }
+  }
+
+  /**
+   * The device of this kind is about to stop (mic muted, camera off, share
+   * ended). Sends silence or black frames on the existing sender instead, so
+   * the connection stays as it is and turning the device back on is a swap,
+   * not a new track. Does nothing if this kind was never pushed: nobody is
+   * announced a placeholder.
+   */
+  sendPlaceholder(kind: 'audio' | 'video'): void {
+    if (this.destroyed) return
+    const subject = this.localSubjects.get(kind)
+    if (!subject || this.placeholders.has(kind)) return
+    const track = kind === 'audio' ? createSilentAudioTrack() : createBlackVideoTrack()
+    if (!track) return
+    this.placeholders.set(kind, track)
+    subject.next(track)
   }
 
   /**
@@ -146,6 +167,8 @@ export class SfuSession {
     for (const timer of this.ackTimers.values()) clearTimeout(timer)
     this.ackTimers.clear()
     for (const sub of this.pushSubs.values()) sub.unsubscribe()
+    for (const track of this.placeholders.values()) track.stop()
+    this.placeholders.clear()
     for (const sub of this.pubSubscriptions) sub.unsubscribe()
     for (const sessionId of this.pubSessionIds) this.releaseSession(sessionId)
     for (const remote of this.remotes.values()) this.closeRemote(remote)
@@ -176,9 +199,13 @@ export class SfuSession {
     const subject = this.localSubjects.get(track.kind)
     if (subject) {
       if (subject.value !== track) subject.next(track)
-      return
+    } else {
+      this.startPush(track)
     }
-    this.startPush(track)
+    // Replaced by a real device. partytracks finishes the swap on its own; a
+    // stopped placeholder in the meantime only means a moment of nothing.
+    this.placeholders.get(track.kind)?.stop()
+    this.placeholders.delete(track.kind)
   }
 
   private startPush(track: MediaStreamTrack): void {
@@ -225,6 +252,8 @@ export class SfuSession {
         this.pushSubs.delete(kind)
         this.localSubjects.delete(kind)
         this.published.delete(kind)
+        this.placeholders.get(kind)?.stop()
+        this.placeholders.delete(kind)
       },
     })
     this.pushSubs.set(kind, sub)

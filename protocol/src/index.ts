@@ -18,6 +18,7 @@ export type MsgType =
   | 'pong'
   | 'sfu-announce'
   | 'sfu-tracks'
+  | 'peer-state'
 
 /**
  * Every WebSocket message, in both directions, is one JSON envelope.
@@ -39,6 +40,8 @@ export interface PeerInfo {
   name: string
   audio: boolean
   video: boolean
+  /** Missing means false. */
+  screenSharing?: boolean
 }
 
 /** client → server, `room` set on the envelope. */
@@ -59,6 +62,20 @@ export interface PeerJoinedData {
   name: string
   audio: boolean
   video: boolean
+  /** Missing means false. */
+  screenSharing?: boolean
+}
+
+/**
+ * client → server → everyone else in the room, `from` set to the sender.
+ * Always the full current state, never a change. The server stores audio,
+ * video and screenSharing so `joined` and `peer-joined` carry them.
+ */
+export interface PeerStateData {
+  audio: boolean
+  video: boolean
+  speaking?: boolean
+  screenSharing: boolean
 }
 
 /** server → everyone else in the room when a peer leaves or disconnects. */

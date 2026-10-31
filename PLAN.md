@@ -199,7 +199,7 @@ Cloudflare's JSON errors are forwarded unchanged so the client can read them. Ev
 **Build:**
 - Mic and camera toggles. Muting swaps in a silent placeholder track with `replaceTrack`, so the connection doesn't renegotiate every time.
 - Switching devices during the call, flipping between front and back camera on phones, and choosing the speaker output.
-- Screen share with `getDisplayMedia`, published as its own track, with "stop sharing" detection.
+- Screen share with `getDisplayMedia`, swapped onto the same video sender as the camera (no new track), with "stop sharing" detection.
 - `peer-state {audio, video, speaking, screenSharing}` over the WebSocket, so others show "muted" or an avatar instead of a frozen frame.
 - A bounded send queue per connection (Node, you). Room events (`joined`, `peer-joined`, `peer-left`, `sfu-tracks`) wait up to 2 s for space, then log `signaling_send_timeout`; `peer-state` is best effort and dropped if the queue is full. Today the WebSocket library buffers without limit until the 60 s idle timeout, so one slow phone would make the server hold every update sent to it. `peer-state` is the first message frequent enough for that to matter.
 

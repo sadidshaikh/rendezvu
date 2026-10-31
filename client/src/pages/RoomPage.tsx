@@ -60,7 +60,7 @@ export default function RoomPage() {
   }
 
   if (stage === 'call') {
-    return <MeetCall meetCode={meetCode} userName={userName} connState={connState} onLeave={handleLeave} />
+    return <MeetCall meetCode={meetCode} userName={userName} client={client} connState={connState} onLeave={handleLeave} />
   }
 
   if (stage === 'left') {

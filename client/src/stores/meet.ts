@@ -11,6 +11,8 @@ interface MeetState {
 
   toggleMute: () => void
   toggleVideo: () => void
+  setMuted: (muted: boolean) => void
+  setVideoOff: (off: boolean) => void
   clearMeet: () => void
 }
 
@@ -20,5 +22,7 @@ export const useMeetStore = create<MeetState>()((set) => ({
 
   toggleMute: () => set((state) => ({ isMuted: !state.isMuted })),
   toggleVideo: () => set((state) => ({ isVideoOff: !state.isVideoOff })),
+  setMuted: (isMuted) => set({ isMuted }),
+  setVideoOff: (isVideoOff) => set({ isVideoOff }),
   clearMeet: () => set({ isMuted: true, isVideoOff: true }),
 }))

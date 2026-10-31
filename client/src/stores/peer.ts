@@ -1,10 +1,11 @@
 import { create } from 'zustand'
 import { toast } from 'sonner'
-import type { IceServer, PeerInfo } from '@rendezvu/protocol'
+import type { IceServer, PeerInfo, PeerStateData } from '@rendezvu/protocol'
 import { setAudioOutputDevice } from '@/lib/audio-context'
 import { getMicConstraints } from '@/lib/audio-constraints'
 import { getDevicePreferences, setDevicePreference } from '@/lib/device-preferences'
 import { describeMediaError } from '@/lib/media-errors'
+import type { SfuSession } from '@/services/webrtc/sfu-session'
 
 /** One remote participant. Their media is in `remoteStreams`, keyed by the same id. */
 export interface RemotePeer {
@@ -12,6 +13,8 @@ export interface RemotePeer {
   name: string
   audio: boolean
   video: boolean
+  screenSharing: boolean
+  speaking: boolean
 }
 
 /** `cancelled`: a newer action (or leaving) superseded this one; not an error. */
@@ -41,14 +44,24 @@ interface PeerState {
    * anything holding the old one (a <video>, a level meter) re-renders.
    */
   localStream: MediaStream | null
+  /** Our screen share, sent on the video sender in place of the camera. Never part of localStream. */
+  screenTrack: MediaStreamTrack | null
+  /**
+   * The call's connection to the SFU, while in a call. Device actions use it
+   * to send a placeholder before stopping a device.
+   */
+  sfuSession: SfuSession | null
   facingMode: 'user' | 'environment'
   preferredAudioInputId: string
   preferredVideoInputId: string
   preferredAudioOutputId: string
 
   setRoster: (peers: PeerInfo[]) => void
-  addPeer: (peer: RemotePeer) => void
+  addPeer: (peer: PeerInfo) => void
   removePeer: (id: string) => void
+  /** From `peer-state`: the person's full current state. */
+  updatePeerState: (id: string, state: PeerStateData) => void
+  setSfuSession: (session: SfuSession | null) => void
   setIceServers: (servers: IceServer[]) => void
   /** Replaces the participant's track of the same kind. */
   setRemoteTrack: (peerId: string, track: MediaStreamTrack) => void
@@ -65,6 +78,10 @@ interface PeerState {
   setAudioInput: (deviceId: string) => Promise<void>
   setVideoInput: (deviceId: string) => Promise<void>
   setAudioOutput: (deviceId: string) => Promise<void>
+  /** `cancelled` also covers closing the picker. */
+  startScreenShare: () => Promise<AcquireResult>
+  /** Placeholder on the sender, then stops the share. The caller restores the camera if it was on. */
+  stopScreenShare: () => void
 
   /** Stops every local track and forgets the room. */
   clearAll: () => void
@@ -72,6 +89,10 @@ interface PeerState {
 
 function streamOf(tracks: MediaStreamTrack[]): MediaStream | null {
   return tracks.length > 0 ? new MediaStream(tracks) : null
+}
+
+function remotePeer(p: PeerInfo): RemotePeer {
+  return { id: p.id, name: p.name, audio: p.audio, video: p.video, screenSharing: p.screenSharing ?? false, speaking: false }
 }
 
 function errorName(error: unknown): string {
@@ -154,6 +175,8 @@ export const usePeerStore = create<PeerState>()((set, get) => {
     iceServers: [],
     remoteStreams: new Map(),
     localStream: null,
+    screenTrack: null,
+    sfuSession: null,
     facingMode: 'user',
     preferredAudioInputId: saved.audioInputId ?? '',
     preferredVideoInputId: saved.videoInputId ?? '',
@@ -162,15 +185,26 @@ export const usePeerStore = create<PeerState>()((set, get) => {
     setRoster: (peers) =>
       set({
         inRoom: true,
-        peers: new Map(peers.map((p) => [p.id, { id: p.id, name: p.name, audio: p.audio, video: p.video }])),
+        peers: new Map(peers.map((p) => [p.id, remotePeer(p)])),
       }),
 
     addPeer: (peer) =>
       set((state) => {
         const peers = new Map(state.peers)
-        peers.set(peer.id, peer)
+        peers.set(peer.id, remotePeer(peer))
         return { peers }
       }),
+
+    updatePeerState: (id, { audio, video, speaking, screenSharing }) =>
+      set((state) => {
+        const current = state.peers.get(id)
+        if (!current) return state
+        const peers = new Map(state.peers)
+        peers.set(id, { ...current, audio, video, screenSharing, speaking: speaking ?? false })
+        return { peers }
+      }),
+
+    setSfuSession: (sfuSession) => set({ sfuSession }),
 
     removePeer: (id) =>
       set((state) => {
@@ -222,6 +256,8 @@ export const usePeerStore = create<PeerState>()((set, get) => {
 
     disableMic: () => {
       audioGeneration++
+      // Silence first: stopping the track a sender is using leaves it with nothing.
+      get().sfuSession?.sendPlaceholder('audio')
       replaceAudio(null)
     },
 
@@ -242,6 +278,9 @@ export const usePeerStore = create<PeerState>()((set, get) => {
 
     disableCamera: () => {
       videoGeneration++
+      // Black frames first, or everyone freezes on the last one. While sharing,
+      // the sender carries the screen, which must keep going.
+      if (!get().screenTrack) get().sfuSession?.sendPlaceholder('video')
       replaceVideo(null)
     },
 
@@ -310,11 +349,57 @@ export const usePeerStore = create<PeerState>()((set, get) => {
       }
     },
 
+    startScreenShare: async () => {
+      if (typeof navigator.mediaDevices?.getDisplayMedia !== 'function') {
+        return { status: 'failed', error: new DOMException('Screen sharing is not supported', 'NotSupportedError') }
+      }
+      const generation = ++videoGeneration
+      try {
+        // 'exclude' leaves this tab out of Chrome's picker: sharing it would show the call inside itself.
+        const media = await navigator.mediaDevices.getDisplayMedia({
+          video: true,
+          audio: false,
+          selfBrowserSurface: 'exclude',
+        } as DisplayMediaStreamOptions)
+        const track = onlyTrack(media, 'video')
+        if (generation !== videoGeneration) {
+          track.stop()
+          return CANCELLED
+        }
+        set({ screenTrack: track })
+        // The same video sender as the camera: a swap, or the first video push.
+        get().sfuSession?.publish(new MediaStream([track]))
+        return OK
+      } catch (error) {
+        // NotAllowedError: the picker was closed.
+        if (generation !== videoGeneration || errorName(error) === 'NotAllowedError') return CANCELLED
+        return { status: 'failed', error }
+      }
+    },
+
+    stopScreenShare: () => {
+      const track = get().screenTrack
+      if (!track) return
+      videoGeneration++
+      get().sfuSession?.sendPlaceholder('video')
+      track.stop()
+      set({ screenTrack: null })
+    },
+
     clearAll: () => {
       audioGeneration++
       videoGeneration++
       get().localStream?.getTracks().forEach((t) => t.stop())
-      set({ inRoom: false, peers: new Map(), remoteStreams: new Map(), iceServers: [], localStream: null })
+      get().screenTrack?.stop()
+      set({
+        inRoom: false,
+        peers: new Map(),
+        remoteStreams: new Map(),
+        iceServers: [],
+        localStream: null,
+        screenTrack: null,
+        sfuSession: null,
+      })
     },
   }
 })
