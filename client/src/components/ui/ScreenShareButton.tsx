@@ -20,7 +20,7 @@ export function ScreenShareButton({ onClick, sharing, busy }: ScreenShareButtonP
       title={label}
       aria-pressed={sharing}
       aria-busy={busy}
-      className={cn('ctrl-btn h-11 w-11', sharing ? 'ctrl-btn-active' : 'ctrl-btn-on')}
+      className={cn('ctrl-btn h-11 w-11', sharing ? 'ctrl-btn-screen' : 'ctrl-btn-on')}
     >
       <Icon className="w-4 h-4 sm:w-5 sm:h-5" aria-hidden="true" />
     </button>

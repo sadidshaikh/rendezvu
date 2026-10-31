@@ -10,6 +10,7 @@ import type {
   PeerStateData,
   SfuTracksData,
 } from '@rendezvu/protocol'
+import { playPeerJoined, playPeerLeft, playScreenShareStart, playScreenShareStop } from '@/lib/sounds'
 import { fetchIceServers, startIceServerKeepalive } from '@/services/api/ice'
 import type { SignalingClient } from '@/services/signaling/client'
 import { CallReconciler } from '@/services/webrtc/call-reconciler'
@@ -153,14 +154,21 @@ export function useCall({ client, roomId, enabled, userName, initialAudio, initi
       const d = env.data
       if (!d) return
       store().addPeer({ id: d.peerId, name: d.name, audio: d.audio, video: d.video, screenSharing: d.screenSharing })
+      playPeerJoined()
     }
     const handlePeerState = (env: { from?: string; data?: PeerStateData }) => {
       if (!env.from || !env.data) return
+      const wasSharing = store().peers.get(env.from)?.screenSharing
       store().updatePeerState(env.from, env.data)
+      // Unknown peers (undefined) make no sound.
+      if (wasSharing === false && env.data.screenSharing) playScreenShareStart()
+      else if (wasSharing === true && !env.data.screenSharing) playScreenShareStop()
     }
     const handlePeerLeft = (env: { data?: PeerLeftData }) => {
       if (!env.data) return
+      const known = store().peers.has(env.data.peerId)
       store().removePeer(env.data.peerId)
+      if (known) playPeerLeft()
       reconciler.removePeer(env.data.peerId)
       reconciler.reconcile()
     }

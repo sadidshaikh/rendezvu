@@ -4,6 +4,7 @@ import type { PeerStateData } from '@rendezvu/protocol'
 import { useAudioLevel } from '@/hooks/use-audio-level'
 import { resumeSharedAudioContext } from '@/lib/audio-context'
 import { describeMediaError } from '@/lib/media-errors'
+import { playScreenShareStart, playScreenShareStop } from '@/lib/sounds'
 import type { SignalingClient } from '@/services/signaling/client'
 import { useMeetStore } from '@/stores/meet'
 import { usePeerStore } from '@/stores/peer'
@@ -42,7 +43,9 @@ export function useCallControls(client: SignalingClient | null, roomId: string) 
     async (restoreCamera: boolean) => {
       const restore = restoreCamera && cameraBeforeShare.current
       cameraBeforeShare.current = false
+      if (!usePeerStore.getState().screenTrack) return
       usePeerStore.getState().stopScreenShare()
+      playScreenShareStop()
       if (restore) await turnCameraOn()
     },
     [turnCameraOn],
@@ -97,7 +100,10 @@ export function useCallControls(client: SignalingClient | null, roomId: string) 
     setShareBusy(true)
     const result = await usePeerStore.getState().startScreenShare()
     setShareBusy(false)
-    if (result.status === 'ok') return
+    if (result.status === 'ok') {
+      playScreenShareStart()
+      return
+    }
     if (result.status === 'failed') toast.error('Could not share your screen.')
     // Closed the picker, or it failed: back to how things were.
     if (cameraBeforeShare.current) {

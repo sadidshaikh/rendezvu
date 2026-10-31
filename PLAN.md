@@ -216,14 +216,14 @@ Cloudflare's JSON errors are forwarded unchanged so the client can read them. Ev
 **Build (client):**
 - A responsive video grid that fits 1–10 people at any screen size.
 - Pin a person to make them large. Highlight whoever is speaking, using an audio level meter.
-- An avatar when the camera is off, a call timer, a copy or share link, and a leave button.
+- An avatar when the camera is off, a copy or share link, join, leave and screen-share sounds, and a leave button. (The time-left timer only exists for booked sessions, so it comes with bookings.)
 - Leaving cleans up everything: stop devices, close sessions, cancel timers.
 
 **Why now:** By now there's enough data (names, tracks, states) to build the real layout once instead of rebuilding it every phase.
 
 **You'll learn:** why the remote `<video>` needs a **new** `MediaStream` object when a track arrives (adding to an existing one doesn't fire the event React relies on).
 
-**Done when:** a 6-person call looks right on a laptop and a phone, and leaving leaves no camera light on and no open connections.
+**Done when:** a 6-person call looks right on a laptop and a phone, and leaving leaves no camera light on and no open connections. ✅ Built; tested with tabs on laptop and phone sizes (see `docs/07-the-call-screen.md`). The 6-device check waits for your run.
 
 ---
 

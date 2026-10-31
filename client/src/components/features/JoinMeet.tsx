@@ -17,6 +17,7 @@ import { StreamVideo } from '@/components/ui/StreamVideo'
 import { useAudioLevel } from '@/hooks/use-audio-level'
 import { useMediaDevices } from '@/hooks/use-media-devices'
 import { resumeSharedAudioContext } from '@/lib/audio-context'
+import { playJoinCall } from '@/lib/sounds'
 import { describeMediaError } from '@/lib/media-errors'
 import { meetCodePattern } from '@/lib/room-routes'
 import { cn } from '@/lib/utils'
@@ -113,6 +114,7 @@ export default function JoinMeet({ meetCode, roomError, onJoin }: JoinMeetProps)
     if (!joinName || !canJoinMeet) return
     // Inside the click, so iOS lets the shared AudioContext run.
     resumeSharedAudioContext()
+    playJoinCall()
     onJoin(joinName)
   }
 

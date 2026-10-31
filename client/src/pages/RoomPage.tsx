@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router'
 import JoinMeet from '@/components/features/JoinMeet'
 import MeetCall from '@/components/features/MeetCall'
 import { Button } from '@/components/ui/button'
+import { CallErrorBoundary } from '@/components/ui/CallErrorBoundary'
 import { useCall } from '@/hooks/use-call'
 import { useSignaling } from '@/hooks/use-signaling'
 import { useJoinMeetStore } from '@/stores/join-meet'
@@ -60,7 +61,11 @@ export default function RoomPage() {
   }
 
   if (stage === 'call') {
-    return <MeetCall meetCode={meetCode} userName={userName} client={client} connState={connState} onLeave={handleLeave} />
+    return (
+      <CallErrorBoundary onLeave={handleLeave}>
+        <MeetCall meetCode={meetCode} userName={userName} client={client} connState={connState} onLeave={handleLeave} />
+      </CallErrorBoundary>
+    )
   }
 
   if (stage === 'left') {

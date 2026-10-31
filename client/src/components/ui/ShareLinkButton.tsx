@@ -5,11 +5,13 @@ import { cn } from '@/lib/utils'
 
 interface ShareLinkButtonProps {
   url: string
+  /** Shown instead of "Share" / "Copy", such as the meet code in the call header. */
+  label?: string
   className?: string
 }
 
 /** Shares the meeting link with the OS share sheet where there is one, otherwise copies it. */
-export function ShareLinkButton({ url, className }: ShareLinkButtonProps) {
+export function ShareLinkButton({ url, label, className }: ShareLinkButtonProps) {
   const [copied, setCopied] = useState(false)
   const canShare = typeof navigator !== 'undefined' && 'share' in navigator
   const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -46,8 +48,17 @@ export function ShareLinkButton({ url, className }: ShareLinkButtonProps) {
         className,
       )}
     >
-      <Icon className={cn('size-3.5', copied && 'text-primary')} aria-hidden="true" />
-      {copied ? 'Copied' : canShare ? 'Share' : 'Copy'}
+      {label ? (
+        <>
+          <span className="meet-code text-sm text-foreground">{label}</span>
+          <Icon className={cn('size-3.5', copied && 'text-primary')} aria-hidden="true" />
+        </>
+      ) : (
+        <>
+          <Icon className={cn('size-3.5', copied && 'text-primary')} aria-hidden="true" />
+          {copied ? 'Copied' : canShare ? 'Share' : 'Copy'}
+        </>
+      )}
     </button>
   )
 }
