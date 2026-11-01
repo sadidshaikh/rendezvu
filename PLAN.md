@@ -266,7 +266,7 @@ Cloudflare's JSON errors are forwarded unchanged so the client can read them. Ev
 
 **You'll learn:** why "connected" doesn't mean "working", how to make async code safe against stale results, and why leaving the call is the point where all pending work gets cancelled.
 
-**Done when:** blocking UDP for 5 seconds freezes and then recovers on its own, toggling the camera fast ends in the last state you chose, and leaving during setup leaves nothing running.
+**Done when:** blocking UDP for 5 seconds freezes and then recovers on its own, toggling the camera fast ends in the last state you chose, and leaving during setup leaves nothing running. ✅ Built; tested in headless tabs with injected faults (a hung pull, frozen stats, a sender that stops, fast toggles, leaving 22 ms after joining; see `docs/09-media-that-survives-problems.md`). The real UDP-blocking check waits for your run.
 
 ---
 

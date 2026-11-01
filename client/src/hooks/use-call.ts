@@ -15,7 +15,8 @@ import { playPeerJoined, playPeerLeft, playScreenShareStart, playScreenShareStop
 import { fetchIceServers, startIceServerKeepalive } from '@/services/api/ice'
 import type { SignalingClient } from '@/services/signaling/client'
 import { CallReconciler } from '@/services/webrtc/call-reconciler'
-import { SfuSession } from '@/services/webrtc/sfu-session'
+import { SfuSession, type RepairInfo } from '@/services/webrtc/sfu-session'
+import { startStatsMonitor, type FlowStall, type StatsMonitor } from '@/services/webrtc/stats-monitor'
 import { useMeetStore } from '@/stores/meet'
 import { usePeerStore } from '@/stores/peer'
 
@@ -36,6 +37,13 @@ const ICE_RETRY_DELAY_MS = 1_000
 // back to this on a Cloudflare failure). Without any STUN server the browser
 // offers host candidates only, which can't reach Cloudflare from behind NAT.
 const STUN_FALLBACK: IceServer[] = [{ urls: ['stun:stun.l.google.com:19302'] }]
+
+/** One console line per repair event: whether rung 1 fixes things, or everything ends up rebuilding. */
+function describeRepair(info: RepairInfo): string {
+  const what = info.stage === 'publish' ? `publish ${info.kind ?? ''}` : `subscribe ${info.sessionId?.slice(0, 8) ?? ''}`
+  const track = info.trackName ? `/${info.trackName}` : ''
+  return `${what.trim()}${track} rung=${info.rung} attempt=${info.attempt}`
+}
 
 /**
  * Drives one participant's time in a room: join once the signaling client is
@@ -59,6 +67,7 @@ export function useCall({ client, roomId, enabled, userName, initialAudio, initi
     let stopIceKeepalive: (() => void) | null = null
     let sfu: SfuSession | null = null
     let stopPublishing: (() => void) | null = null
+    let statsMonitor: StatsMonitor | null = null
 
     // Created before the join: the replay of everyone's tracks arrives right
     // after `joined`, long before the SFU session exists. It's recorded here
@@ -83,9 +92,25 @@ export function useCall({ client, roomId, enabled, userName, initialAudio, initi
         iceServers: servers.length > 0 ? servers : STUN_FALLBACK,
         // Sent only once Cloudflare confirms, so nobody subscribes to a track that isn't live.
         onLocalTracksChanged: (announcement) => client.send<SfuTracksData>('sfu-announce', announcement, { room: roomId }),
-        onPublishTimeout: () =>
-          toast.warning("Your camera or microphone isn't reaching the call yet.", { id: 'sfu-publish-timeout' }),
+        onPublishTimeout: (kind) =>
+          toast.warning(
+            kind === 'video'
+              ? "Your camera isn't reaching others yet. Reconnecting it now."
+              : "Your microphone isn't reaching others yet. Reconnecting it now.",
+            { id: `sfu-publish-timeout-${kind}` },
+          ),
         onConnectionStateChange: (state) => console.info('[sfu] publish connection', state),
+        onRepair: (info) => {
+          if (!disposed) console.warn('[repair]', describeRepair(info))
+        },
+        onRepaired: (info) => {
+          if (!disposed) console.info('[repaired]', describeRepair(info))
+        },
+        onRemoteHealth: (remoteSessionId, reconnecting) => {
+          if (disposed) return
+          const peerId = reconciler.peerForSession(remoteSessionId)
+          if (peerId) store().setMediaReconnecting(peerId, reconnecting)
+        },
       })
       const session = sfu
       // Device actions send placeholders through it from now on.
@@ -104,6 +129,32 @@ export function useCall({ client, roomId, enabled, userName, initialAudio, initi
       })
       // Pull everyone whose tracks were announced while we were getting here.
       reconciler.reconcile()
+      statsMonitor = startStatsMonitor({
+        collect: () => session.collectStats(),
+        onStall: (stall) => {
+          if (disposed || !stallMatters(stall)) return
+          console.warn('[stats] stalled', stall.direction, stall.kind, `${stall.stalledForMs} ms`, stall.vanished ? '(vanished)' : '')
+          session.repairStalledFlow(stall.direction, stall.sessionId)
+        },
+        onRecover: (stall) => {
+          if (disposed) return
+          console.info('[stats] flowing again', stall.direction, stall.kind, `after ${stall.stalledForMs} ms`)
+          session.settleStalledFlow(stall.direction, stall.sessionId)
+        },
+      })
+    }
+
+    /**
+     * Our own silence is already filtered by the monitor (only real devices
+     * count). Someone else's silence could be a broken pull or a mute; the
+     * byte counters look the same, so what they told the room decides.
+     */
+    const stallMatters = (stall: FlowStall): boolean => {
+      if (stall.direction === 'publish') return true
+      const peerId = stall.sessionId ? reconciler.peerForSession(stall.sessionId) : undefined
+      const peer = peerId ? store().peers.get(peerId) : undefined
+      if (!peer) return false
+      return stall.kind === 'audio' ? peer.audio : peer.video || peer.screenSharing
     }
 
     // Only after `joined`: the server hands out TURN credentials for rooms
@@ -254,6 +305,8 @@ export function useCall({ client, roomId, enabled, userName, initialAudio, initi
 
     return () => {
       disposed = true
+      // First: a poll landing mid-teardown would ask for repairs.
+      statsMonitor?.stop()
       stopIceKeepalive?.()
       stopPublishing?.()
       reconciler.dispose()

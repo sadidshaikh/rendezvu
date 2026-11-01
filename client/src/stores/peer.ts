@@ -44,6 +44,8 @@ interface PeerState {
    * notice. A new object changes the prop, and the element re-attaches.
    */
   remoteStreams: Map<string, MediaStream>
+  /** People whose media is being repaired right now. Their tile shows "Reconnecting…". */
+  mediaReconnecting: Set<string>
 
   /**
    * Our own live tracks. Replaced with a new MediaStream on every change, so
@@ -76,6 +78,7 @@ interface PeerState {
   setRemoteTrack: (peerId: string, track: MediaStreamTrack) => void
   /** No-op if that track was already replaced. */
   removeRemoteTrack: (peerId: string, track: MediaStreamTrack) => void
+  setMediaReconnecting: (peerId: string, reconnecting: boolean) => void
   /** Forgets the room's participants, their media and ICE servers. Local media is untouched. */
   clearPeers: () => void
 
@@ -108,10 +111,11 @@ function remotePeer(p: PeerInfo): RemotePeer {
  * The roster as `peers` says, keeping each known person's `speaking` (it
  * isn't stored on the server) and dropping the media of anyone gone.
  */
-function rosterFrom(state: Pick<PeerState, 'peers' | 'remoteStreams'>, peers: PeerInfo[]) {
+function rosterFrom(state: Pick<PeerState, 'peers' | 'remoteStreams' | 'mediaReconnecting'>, peers: PeerInfo[]) {
   const next = new Map(peers.map((p) => [p.id, { ...remotePeer(p), speaking: state.peers.get(p.id)?.speaking ?? false }]))
   const remoteStreams = new Map([...state.remoteStreams].filter(([id]) => next.has(id)))
-  return { peers: next, remoteStreams }
+  const mediaReconnecting = new Set([...state.mediaReconnecting].filter((id) => next.has(id)))
+  return { peers: next, remoteStreams, mediaReconnecting }
 }
 
 function errorName(error: unknown): string {
@@ -194,6 +198,7 @@ export const usePeerStore = create<PeerState>()((set, get) => {
     peers: new Map(),
     iceServers: [],
     remoteStreams: new Map(),
+    mediaReconnecting: new Set(),
     localStream: null,
     screenTrack: null,
     sfuSession: null,
@@ -232,7 +237,9 @@ export const usePeerStore = create<PeerState>()((set, get) => {
         peers.delete(id)
         const remoteStreams = new Map(state.remoteStreams)
         remoteStreams.delete(id)
-        return { peers, remoteStreams }
+        const mediaReconnecting = new Set(state.mediaReconnecting)
+        mediaReconnecting.delete(id)
+        return { peers, remoteStreams, mediaReconnecting }
       }),
 
     setIceServers: (iceServers) => set({ iceServers }),
@@ -256,7 +263,18 @@ export const usePeerStore = create<PeerState>()((set, get) => {
         return { remoteStreams }
       }),
 
-    clearPeers: () => set({ inRoom: false, peers: new Map(), remoteStreams: new Map(), iceServers: [] }),
+    setMediaReconnecting: (peerId, reconnecting) =>
+      set((state) => {
+        if (state.mediaReconnecting.has(peerId) === reconnecting) return state
+        if (reconnecting && !state.peers.has(peerId)) return state
+        const mediaReconnecting = new Set(state.mediaReconnecting)
+        if (reconnecting) mediaReconnecting.add(peerId)
+        else mediaReconnecting.delete(peerId)
+        return { mediaReconnecting }
+      }),
+
+    clearPeers: () =>
+      set({ inRoom: false, peers: new Map(), remoteStreams: new Map(), mediaReconnecting: new Set(), iceServers: [] }),
 
     enableMic: async () => {
       const generation = ++audioGeneration
@@ -414,6 +432,7 @@ export const usePeerStore = create<PeerState>()((set, get) => {
         inRoom: false,
         peers: new Map(),
         remoteStreams: new Map(),
+        mediaReconnecting: new Set(),
         iceServers: [],
         localStream: null,
         screenTrack: null,

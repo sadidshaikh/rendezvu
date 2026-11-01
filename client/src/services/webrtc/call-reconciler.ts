@@ -23,17 +23,12 @@ interface DesiredTracks {
 interface Pull {
   stop: () => void
   track?: MediaStreamTrack
-  timer?: ReturnType<typeof setTimeout>
 }
 
 interface AppliedTracks {
   sessionId: string
   pulls: Map<string, Pull>
 }
-
-// A pull normally delivers its track in 1–3 s. Automatic repair is Phase 9;
-// for now a pull that never delivers is at least visible in the console.
-const PULL_WARN_AFTER_MS = 15_000
 
 /**
  * Keeps what we pull in line with what the room says is published.
@@ -157,11 +152,8 @@ export class CallReconciler {
     }
   }
 
-  /** Stops the warning timers. The SfuSession's destroy() closes the connections themselves. */
+  /** Forgets everything. The SfuSession's destroy() closes the connections themselves. */
   dispose(): void {
-    for (const applied of this.applied.values()) {
-      for (const pull of applied.pulls.values()) clearTimeout(pull.timer)
-    }
     this.applied.clear()
     this.desired.clear()
   }
@@ -174,13 +166,11 @@ export class CallReconciler {
   private startPull(session: SfuSession, peerId: string, applied: AppliedTracks, trackName: string): void {
     const pull: Pull = { stop: () => {} }
     applied.pulls.set(trackName, pull)
-    pull.timer = setTimeout(() => {
-      console.warn(`[call] no track from ${peerId} (${trackName}) after ${PULL_WARN_AFTER_MS / 1000} s`)
-    }, PULL_WARN_AFTER_MS)
+    // A pull that never delivers is SfuSession's to notice and repair. Its
+    // repairs can deliver a new track for the same pull; that replaces the old one.
     pull.stop = session.subscribeTrack(applied.sessionId, trackName, (track) => {
       // A pull stopped a moment ago can still deliver; it's no longer ours.
       if (applied.pulls.get(trackName) !== pull) return
-      clearTimeout(pull.timer)
       if (pull.track && pull.track !== track) this.opts.onTrackGone(peerId, pull.track)
       pull.track = track
       this.opts.onTrack(peerId, track)
@@ -191,7 +181,6 @@ export class CallReconciler {
     const pull = applied.pulls.get(trackName)
     if (!pull) return
     applied.pulls.delete(trackName)
-    clearTimeout(pull.timer)
     pull.stop()
     if (pull.track) this.opts.onTrackGone(peerId, pull.track)
   }

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Mic, MicOff, Pin, PinOff } from 'lucide-react'
+import { Loader2, Mic, MicOff, Pin, PinOff } from 'lucide-react'
 import { Avatar } from '@/components/ui/Avatar'
 import { StreamVideo } from '@/components/ui/StreamVideo'
 import { initialsOf } from '@/lib/avatar'
@@ -22,6 +22,8 @@ interface VideoTileProps {
   pinned?: boolean
   /** A thumbnail in the pin strip: initials, no badges. */
   compact?: boolean
+  /** Their media is being repaired. The video stays on its last frame meanwhile. */
+  reconnecting?: boolean
 }
 
 /**
@@ -39,6 +41,7 @@ export function VideoTile({
   onPin,
   pinned = false,
   compact = false,
+  reconnecting = false,
 }: VideoTileProps) {
   const name = rawName || (isLocal ? 'You' : 'Participant')
   const label = isLocal ? `${name} (you)` : name
@@ -120,7 +123,20 @@ export function VideoTile({
         />
       )}
 
-      {!isLocal && wantsVideo && !showingVideo && !compact && (
+      {reconnecting && (
+        <div
+          role="status"
+          className={cn(
+            'glass-pill absolute top-2.5 left-2.5 z-10 gap-1.5',
+            compact ? 'size-6 justify-center p-0' : 'px-2 py-0.5 text-[12px]',
+          )}
+        >
+          <Loader2 className="size-3.5 shrink-0 animate-spin" aria-hidden="true" />
+          <span className={compact ? 'sr-only' : undefined}>Reconnecting…</span>
+        </div>
+      )}
+
+      {!isLocal && wantsVideo && !showingVideo && !compact && !reconnecting && (
         <span role="status" className="absolute inset-x-0 bottom-10 text-center text-xs text-muted-foreground">
           Waiting for video…
         </span>

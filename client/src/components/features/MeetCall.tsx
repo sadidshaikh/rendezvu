@@ -40,6 +40,7 @@ export default function MeetCall({ meetCode, userName, client, connState, reconn
   const localStream = usePeerStore((s) => s.localStream)
   const screenTrack = usePeerStore((s) => s.screenTrack)
   const remoteStreams = usePeerStore((s) => s.remoteStreams)
+  const mediaReconnecting = usePeerStore((s) => s.mediaReconnecting)
   const controls = useCallControls(client, meetCode)
   const devices = useMediaDevices(localStream)
   const [showSettings, setShowSettings] = useState(false)
@@ -133,6 +134,7 @@ export default function MeetCall({ meetCode, userName, client, connState, reconn
                 screenSharing={p.screenSharing}
                 onPin={() => togglePin(p.id)}
                 pinned={pin === p.id}
+                reconnecting={mediaReconnecting.has(p.id)}
                 compact={focusId !== null && focusId !== p.id}
               />
             ))}

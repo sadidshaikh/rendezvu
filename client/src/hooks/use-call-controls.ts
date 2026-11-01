@@ -14,6 +14,9 @@ import { usePeerStore } from '@/stores/peer'
  * telling the room about it. The state goes out as `peer-state` whenever it
  * changes, so no handler has to remember to send it.
  */
+// How long a live mic may stay muted by the system before it counts as interrupted.
+const MIC_MUTED_GRACE_MS = 3_000
+
 export function useCallControls(client: SignalingClient | null, roomId: string) {
   const inRoom = usePeerStore((s) => s.inRoom)
   const joinCount = usePeerStore((s) => s.joinCount)
@@ -127,28 +130,65 @@ export function useCallControls(client: SignalingClient | null, roomId: string) 
     return () => screenTrack.removeEventListener('ended', onEnded)
   }, [screenTrack, stopSharing])
 
-  // A device can end on its own: unplugged, permission revoked, taken by
+  // A device can stop on its own: unplugged, permission revoked, taken by
   // another app. Treat it as switched off, so the room is told and the sender
   // gets a placeholder instead of a dead track.
   useEffect(() => {
     if (!localStream) return
-    const listeners = localStream.getTracks().map((track) => {
-      const onEnded = () => {
-        if (!usePeerStore.getState().localStream?.getTracks().includes(track)) return
-        if (track.kind === 'audio') {
-          usePeerStore.getState().disableMic()
-          useMeetStore.getState().setMuted(true)
-          toast('Microphone was interrupted. Click to re-enable.')
-        } else {
-          usePeerStore.getState().disableCamera()
-          useMeetStore.getState().setVideoOff(true)
-          toast('Camera was interrupted. Click to re-enable.')
-        }
+    const interrupted = (track: MediaStreamTrack) => {
+      // Already replaced or switched off: nothing to undo.
+      if (!usePeerStore.getState().localStream?.getTracks().includes(track)) return
+      if (track.kind === 'audio') {
+        usePeerStore.getState().disableMic()
+        useMeetStore.getState().setMuted(true)
+        toast('Microphone was interrupted. Click to re-enable.')
+      } else {
+        usePeerStore.getState().disableCamera()
+        useMeetStore.getState().setVideoOff(true)
+        toast('Camera was interrupted. Click to re-enable.')
       }
+    }
+
+    const cleanups = localStream.getTracks().map((track) => {
+      const onEnded = () => interrupted(track)
       track.addEventListener('ended', onEnded)
-      return () => track.removeEventListener('ended', onEnded)
+      // Some systems mute a mic another app took instead of ending it. Muted
+      // for a while while still live means the same. The camera has no such
+      // rule: phones mute it whenever the tab is in the background.
+      let muteTimer: ReturnType<typeof setTimeout> | undefined
+      const onMute = () => {
+        clearTimeout(muteTimer)
+        muteTimer = setTimeout(() => {
+          if (track.muted && track.readyState === 'live') interrupted(track)
+        }, MIC_MUTED_GRACE_MS)
+      }
+      const onUnmute = () => clearTimeout(muteTimer)
+      if (track.kind === 'audio') {
+        track.addEventListener('mute', onMute)
+        track.addEventListener('unmute', onUnmute)
+      }
+      return () => {
+        clearTimeout(muteTimer)
+        track.removeEventListener('ended', onEnded)
+        track.removeEventListener('mute', onMute)
+        track.removeEventListener('unmute', onUnmute)
+      }
     })
-    return () => listeners.forEach((remove) => remove())
+
+    // Waking from sleep, some browsers update readyState without firing
+    // `ended`. Coming back to the tab is the moment to look once.
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return
+      for (const track of localStream.getTracks()) {
+        if (track.readyState === 'ended' || (track.kind === 'audio' && track.muted)) interrupted(track)
+      }
+    }
+    document.addEventListener('visibilitychange', onVisible)
+
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible)
+      cleanups.forEach((cleanup) => cleanup())
+    }
   }, [localStream])
 
   // The full state, whenever any part of it changes. Sent once after every
