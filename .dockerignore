@@ -1,0 +1,14 @@
+# Only what the signaling image copies is needed; everything else stays out
+# of the build context (and out of the image).
+**/node_modules
+client/src
+client/public
+client/dist
+docs
+certs
+**/.env
+**/.env.*
+.git
+.github
+**/*.tsbuildinfo
+.DS_Store

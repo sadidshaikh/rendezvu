@@ -1,0 +1,46 @@
+# The signaling server on Fly.io: exactly one always-on machine.
+# Rooms live in this process's memory, so two machines would split them.
+# Deploy from the repo root (the build context must be the root, for the npm workspace):
+#   fly deploy . --config signaling/fly.toml --dockerfile signaling/Dockerfile --ha=false
+
+app = "rendezvu-signal"
+# Nearest to most of your users: bom (Mumbai), fra (Frankfurt), iad (Virginia)…
+primary_region = "bom"
+kill_signal = "SIGTERM"
+# Time for the shutdown to save rooms and close every socket with 1001.
+kill_timeout = "15s"
+
+[env]
+  HOST = "0.0.0.0"
+  PORT = "8080"
+  # Fly sets this header from the real client address and overwrites any a client sends.
+  TRUSTED_IP_HEADER = "fly-client-ip"
+  STATE_DIR = "/data"
+  # The client's exact origin. Add a Pages preview origin here to test one.
+  ALLOWED_ORIGINS = "https://rendezvu.dev"
+  SFU_DAILY_SESSION_CAP = "2000"
+  # Secrets, set with `fly secrets set`, never here:
+  # CF_CALLS_APP_ID, CF_CALLS_APP_TOKEN, CF_TURN_KEY_ID, CF_TURN_API_TOKEN, ROOM_TOKEN_SECRET
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Always on: a stopped machine forgets every room and wakes too slowly.
+  auto_stop_machines = "off"
+  auto_start_machines = false
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/healthz"
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "10s"
+
+[[mounts]]
+  source = "rendezvu_state"
+  destination = "/data"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

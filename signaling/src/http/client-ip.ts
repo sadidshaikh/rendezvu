@@ -1,17 +1,25 @@
 import type { IncomingMessage } from 'node:http'
 
+// The one header our hosting platform sets, overwriting whatever a client
+// sent: `fly-client-ip` on Fly, `cf-connecting-ip` behind Cloudflare. Null
+// means no proxy in front (development): the socket address is the truth.
+let trustedHeader: string | null = null
+
+/** Set once at startup from TRUSTED_IP_HEADER. */
+export function setTrustedIpHeader(name: string | null): void {
+  trustedHeader = name ? name.toLowerCase() : null
+}
+
 /**
- * The caller's address. Behind a hosting platform every request arrives from
- * the platform's proxy, so the forwarding headers come first; without them
- * every user would share the proxy's IP (and one rate-limit bucket).
+ * The caller's address, for rate limits and the per-IP socket cap. Only the
+ * configured header is believed: a client can send X-Forwarded-For itself,
+ * and trusting it would give a script a fresh rate-limit bucket per request.
  */
 export function clientIp(req: IncomingMessage): string {
-  for (const name of ['cf-connecting-ip', 'x-real-ip']) {
-    const value = header(req, name)?.trim()
+  if (trustedHeader) {
+    const value = header(req, trustedHeader)?.split(',')[0]?.trim()
     if (value) return value
   }
-  const first = header(req, 'x-forwarded-for')?.split(',')[0]?.trim()
-  if (first) return first
   return req.socket.remoteAddress ?? 'unknown'
 }
 

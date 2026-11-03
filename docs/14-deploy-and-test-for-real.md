@@ -1,6 +1,6 @@
 # Phase 14: Deploy and test for real
 
-Status: **frontend built**; backend and deployment next. Hosting: Fly.io + Cloudflare Pages + a custom domain (chosen). Backend and deployment: you · Frontend: Claude
+Status: **frontend and backend built**; deployment and real-world testing next. Hosting: Fly.io + Cloudflare Pages + a custom domain (chosen). Backend: Claude (on request) · Deployment: you · Frontend: Claude
 
 ## Goal
 
@@ -221,7 +221,7 @@ Node 24 runs the TypeScript directly, as in development, so there's no build ste
   - `TRUSTED_IP_HEADER=fly-client-ip`
   - `STATE_DIR=/data`
   - `ALLOWED_ORIGINS=https://<client-origin>`
-- **One machine.** Deploy with `fly deploy --ha=false`; never run `fly scale count 2`.
+- **One machine.** Deploy from the repo root with `fly deploy . --config signaling/fly.toml --dockerfile signaling/Dockerfile --ha=false` (the root is the build context, for the npm workspace); never run `fly scale count 2`.
 
 ### 3. Config additions (`signaling/src/config.ts`)
 
@@ -291,10 +291,11 @@ Node 24 runs the TypeScript directly, as in development, so there's no build ste
 2. **Fly:**
    - install `flyctl`, then `fly auth signup`
    - add a card; you'll pay about $2–3 a month
-   - from the repo root, `fly launch --no-deploy --config signaling/fly.toml --dockerfile signaling/Dockerfile`
+   - set `app` and `primary_region` in `signaling/fly.toml`, then `fly apps create <app>` (`fly launch` would rewrite the config)
    - `fly volumes create rendezvu_state --size 1 --region <region>`
    - `fly secrets set CF_CALLS_APP_ID=… CF_CALLS_APP_TOKEN=… CF_TURN_KEY_ID=… CF_TURN_API_TOKEN=… ROOM_TOKEN_SECRET=$(openssl rand -hex 32)`
-   - `fly deploy --ha=false`
+   - from the repo root: `fly deploy . --config signaling/fly.toml --dockerfile signaling/Dockerfile --ha=false`
+   - `fly logs --config signaling/fly.toml` should show the `config …` line with `production=true`
    - `curl https://<app>.fly.dev/healthz` → `ok`
 3. **Pages:**
    - Cloudflare dashboard → Workers & Pages → Create → Pages → connect the GitHub repo, with the build settings from item 6

@@ -10,6 +10,7 @@ import { errorMessage, log } from '../log.ts'
 import type { InstantRoomRegistry } from '../meets/instant-rooms.ts'
 import { requireActiveRoom } from '../meets/room-access.ts'
 import { sendRefusal, unauthorized, type RoomAccess } from '../access/room-access.ts'
+import type { DailySessionCap } from './daily-cap.ts'
 import type { Hub } from '../signaling/hub.ts'
 import { SfuUpstreamError, type CloudflareSfuClient, type SfuSubPath } from './cloudflare-sfu.ts'
 import type { SfuSessionKind, SfuSessionRegistry } from './session-registry.ts'
@@ -34,6 +35,8 @@ export interface SfuDeps {
   hub: Hub
   rooms: InstantRoomRegistry
   access: RoomAccess
+  /** Sessions allowed per UTC day, to keep the Cloudflare bill bounded. */
+  dailyCap: DailySessionCap
   /** Null when CF_CALLS_APP_ID / CF_CALLS_APP_TOKEN aren't set. */
   sfuClient: CloudflareSfuClient | null
   allowedOrigins: string[]
@@ -181,10 +184,16 @@ async function createSession(req: IncomingMessage, res: ServerResponse, url: URL
     sendError(res, 403, 'NOT_IN_ROOM', 'Join the meeting first.')
     return
   }
+  // Last, so only requests that would really create a session count against it.
+  if (!deps.dailyCap.allows()) {
+    sendError(res, 503, 'SFU_DAILY_CAP', 'Video is paused for today. Try again tomorrow.')
+    return
+  }
 
   const clientGone = watchClientGone(res)
   try {
     const sessionId = await sfu.createSession(clientGone.signal)
+    deps.dailyCap.record()
     // The tab may have left while Cloudflare was answering; its sessions
     // were already dropped, and this one must not outlive it either.
     if (!deps.hub.isPresenceInRoom(presenceId, roomId)) {

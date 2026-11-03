@@ -11,6 +11,14 @@ interface InstantRoom {
 
 const DEFAULT_TTL_MS = 12 * 60 * 60_000
 
+/** One room as saved to disk across a restart. */
+export interface SavedRoom {
+  code: string
+  createdAt: number
+  activatedAt: number | null
+  expiresAt: number
+}
+
 /**
  * Which instant-meeting codes may be used, and for how long.
  *
@@ -94,6 +102,36 @@ export class InstantRoomRegistry {
   markActive(code: string): void {
     const room = this.rooms.get(code)
     if (room) room.emptySince = null
+  }
+
+  /** What survives a restart: every room still usable, without the empty-room clocks. */
+  snapshot(now = Date.now()): SavedRoom[] {
+    const saved: SavedRoom[] = []
+    for (const [code, room] of this.rooms) {
+      if (room.closed || this.expired(room, now)) continue
+      saved.push({ code, createdAt: room.createdAt, activatedAt: room.activatedAt, expiresAt: room.expiresAt })
+    }
+    return saved
+  }
+
+  /**
+   * Rooms saved before a restart. A room that had started counts as empty
+   * from now: if nobody comes back, the normal empty-grace closes it.
+   */
+  restore(saved: SavedRoom[], now = Date.now()): number {
+    let restored = 0
+    for (const r of saved) {
+      if (this.rooms.has(r.code) || r.expiresAt <= now) continue
+      this.rooms.set(r.code, {
+        createdAt: r.createdAt,
+        activatedAt: r.activatedAt,
+        emptySince: r.activatedAt === null ? null : now,
+        expiresAt: r.expiresAt,
+        closed: false,
+      })
+      restored++
+    }
+    return restored
   }
 
   /** Drops entries that can never be used again, so memory doesn't grow forever. */

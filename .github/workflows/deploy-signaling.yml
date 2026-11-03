@@ -1,0 +1,27 @@
+name: Deploy signaling
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - signaling/**
+      - protocol/**
+      - package-lock.json
+      - .github/workflows/deploy-signaling.yml
+  workflow_dispatch:
+
+# Never two deploys at once: the second would restart the machine mid-deploy.
+concurrency:
+  group: deploy-signaling
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      # One machine, always: rooms live in its memory.
+      - run: flyctl deploy . --config signaling/fly.toml --dockerfile signaling/Dockerfile --remote-only --ha=false
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
