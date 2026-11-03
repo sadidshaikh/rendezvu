@@ -21,6 +21,10 @@ export function useCallControls(client: SignalingClient | null, roomId: string) 
   const inRoom = usePeerStore((s) => s.inRoom)
   const joinCount = usePeerStore((s) => s.joinCount)
   const localStream = usePeerStore((s) => s.localStream)
+  // The device tracks. With an effect on, localStream holds processed tracks,
+  // which never end by themselves when a device is unplugged; these do.
+  const rawCameraTrack = usePeerStore((s) => s.rawCameraTrack)
+  const rawMicTrack = usePeerStore((s) => s.rawMicTrack)
   const screenTrack = usePeerStore((s) => s.screenTrack)
   const isMuted = useMeetStore((s) => s.isMuted)
   const isVideoOff = useMeetStore((s) => s.isVideoOff)
@@ -134,10 +138,12 @@ export function useCallControls(client: SignalingClient | null, roomId: string) 
   // another app. Treat it as switched off, so the room is told and the sender
   // gets a placeholder instead of a dead track.
   useEffect(() => {
-    if (!localStream) return
+    const deviceTracks = [rawMicTrack, rawCameraTrack].filter((t): t is MediaStreamTrack => t !== null)
+    if (deviceTracks.length === 0) return
     const interrupted = (track: MediaStreamTrack) => {
       // Already replaced or switched off: nothing to undo.
-      if (!usePeerStore.getState().localStream?.getTracks().includes(track)) return
+      const { rawCameraTrack: camera, rawMicTrack: mic } = usePeerStore.getState()
+      if (track !== camera && track !== mic) return
       if (track.kind === 'audio') {
         usePeerStore.getState().disableMic()
         useMeetStore.getState().setMuted(true)
@@ -149,7 +155,7 @@ export function useCallControls(client: SignalingClient | null, roomId: string) 
       }
     }
 
-    const cleanups = localStream.getTracks().map((track) => {
+    const cleanups = deviceTracks.map((track) => {
       const onEnded = () => interrupted(track)
       track.addEventListener('ended', onEnded)
       // Some systems mute a mic another app took instead of ending it. Muted
@@ -179,7 +185,7 @@ export function useCallControls(client: SignalingClient | null, roomId: string) 
     // `ended`. Coming back to the tab is the moment to look once.
     const onVisible = () => {
       if (document.visibilityState !== 'visible') return
-      for (const track of localStream.getTracks()) {
+      for (const track of deviceTracks) {
         if (track.readyState === 'ended' || (track.kind === 'audio' && track.muted)) interrupted(track)
       }
     }
@@ -189,7 +195,7 @@ export function useCallControls(client: SignalingClient | null, roomId: string) 
       document.removeEventListener('visibilitychange', onVisible)
       cleanups.forEach((cleanup) => cleanup())
     }
-  }, [localStream])
+  }, [rawCameraTrack, rawMicTrack])
 
   // The full state, whenever any part of it changes. Sent once after every
   // join too: on arrival it covers a toggle made while the join was on its

@@ -12,6 +12,9 @@ import type {
 import { setAudioOutputDevice } from '@/lib/audio-context'
 import { getMicConstraints } from '@/lib/audio-constraints'
 import { getDevicePreferences, setDevicePreference } from '@/lib/device-preferences'
+import type { BackgroundProcessor } from '@/lib/effects/background'
+import type { NoiseSuppressor } from '@/lib/effects/noise'
+import { readEffectPreferences, saveEffectPreferences, type BackgroundEffect } from '@/lib/effects/preferences'
 import { describeMediaError } from '@/lib/media-errors'
 import type { SfuSession } from '@/services/webrtc/sfu-session'
 
@@ -113,6 +116,20 @@ interface PeerState {
   /** Our screen share, sent on the video sender in place of the camera. Never part of localStream. */
   screenTrack: MediaStreamTrack | null
   /**
+   * The device tracks. With an effect on, localStream holds the processed
+   * track instead, and these are what turning the effect off swaps back to.
+   * Unplugging ends these, never the processed ones, so they're what to watch.
+   */
+  rawCameraTrack: MediaStreamTrack | null
+  rawMicTrack: MediaStreamTrack | null
+  backgroundEffect: BackgroundEffect
+  /** The picture behind you with 'image', as an object URL. For this page only. */
+  backgroundImageUrl: string | null
+  noiseSuppression: boolean
+  /** An effect is starting (the first time, its model is loading). */
+  backgroundBusy: boolean
+  noiseBusy: boolean
+  /**
    * The call's connection to the SFU, while in a call. Device actions use it
    * to send a placeholder before stopping a device.
    */
@@ -158,6 +175,12 @@ interface PeerState {
   startScreenShare: () => Promise<AcquireResult>
   /** Placeholder on the sender, then stops the share. The caller restores the camera if it was on. */
   stopScreenShare: () => void
+  /**
+   * Saved, and applied now if the camera is on. Resolves to whether that
+   * effect is really on: false after a fallback to the plain camera.
+   */
+  setBackgroundEffect: (effect: BackgroundEffect, image?: File) => Promise<boolean>
+  setNoiseSuppression: (on: boolean) => Promise<boolean>
 
   /** Stops every local track and forgets the room. */
   clearAll: () => void
@@ -263,15 +286,173 @@ export const usePeerStore = create<PeerState>()((set, get) => {
   let audioGeneration = 0
   let videoGeneration = 0
 
-  const replaceAudio = (track: MediaStreamTrack | null) => {
+  // What goes out, raw or processed. Stops nothing: raw tracks are stopped by
+  // whatever replaces them, processed ones by their effect's stop().
+  const sendAudio = (track: MediaStreamTrack | null) => {
     const current = get().localStream
-    current?.getAudioTracks().forEach((t) => t.stop())
     set({ localStream: streamOf([...(track ? [track] : []), ...(current?.getVideoTracks() ?? [])]) })
   }
-  const replaceVideo = (track: MediaStreamTrack | null) => {
+  const sendVideo = (track: MediaStreamTrack | null) => {
     const current = get().localStream
-    current?.getVideoTracks().forEach((t) => t.stop())
     set({ localStream: streamOf([...(current?.getAudioTracks() ?? []), ...(track ? [track] : [])]) })
+  }
+
+  // ── Effects ──
+  // Camera and effect changes run one at a time per kind, so a toggle during
+  // a slow model load can't interleave with it: the last one queued wins.
+  let videoTasks: Promise<unknown> = Promise.resolve()
+  let audioTasks: Promise<unknown> = Promise.resolve()
+  const runVideo = <T,>(task: () => Promise<T>): Promise<T> => {
+    const run = videoTasks.then(task, task)
+    videoTasks = run.catch(() => {})
+    return run
+  }
+  const runAudio = <T,>(task: () => Promise<T>): Promise<T> => {
+    const run = audioTasks.then(task, task)
+    audioTasks = run.catch(() => {})
+    return run
+  }
+  let backgroundProcessor: BackgroundProcessor | null = null
+  let noiseSuppressor: NoiseSuppressor | null = null
+  let backgroundImage: HTMLImageElement | null = null
+
+  const BLUR_PX: Record<string, number> = { 'blur-subtle': 8, 'blur-medium': 14, 'blur-strong': 22 }
+
+  const backgroundUnavailable = (reason: 'slow' | 'error') => {
+    set({ backgroundEffect: 'off' })
+    saveEffectPreferences({ background: 'off' })
+    toast.error(
+      reason === 'slow' ? 'Background blur was turned off to keep your call smooth.' : "Background blur isn't available on this device.",
+      { id: 'effect-background' },
+    )
+  }
+  const noiseUnavailable = () => {
+    set({ noiseSuppression: false })
+    saveEffectPreferences({ noiseSuppression: false })
+    toast.error("Noise suppression isn't available, using your normal microphone.", { id: 'effect-noise' })
+  }
+
+  /** The current effect on `raw`: its processor and output, or null (off, or it failed and said so). */
+  const startBackground = async (raw: MediaStreamTrack) => {
+    const effect = get().backgroundEffect
+    if (effect === 'off') return null
+    set({ backgroundBusy: true })
+    let processor: BackgroundProcessor | null = null
+    try {
+      const { BackgroundProcessor } = await import('@/lib/effects/background')
+      processor = new BackgroundProcessor({
+        blurPx: BLUR_PX[effect],
+        image: effect === 'image' ? (backgroundImage ?? undefined) : undefined,
+        onFailure: (reason) => {
+          // Only the one in use: an old one failing changes nothing.
+          if (processor !== backgroundProcessor) return
+          backgroundProcessor = null
+          const rawTrack = get().rawCameraTrack
+          if (rawTrack?.readyState === 'live') sendVideo(rawTrack)
+          backgroundUnavailable(reason)
+        },
+      })
+      const track = await processor.start(raw)
+      return { processor, track }
+    } catch (err) {
+      console.warn('[effects] background effect failed to start', err)
+      processor?.stop()
+      backgroundUnavailable('error')
+      return null
+    } finally {
+      set({ backgroundBusy: false })
+    }
+  }
+
+  const startNoise = async (raw: MediaStreamTrack) => {
+    if (!get().noiseSuppression) return null
+    set({ noiseBusy: true })
+    let suppressor: NoiseSuppressor | null = null
+    try {
+      const { NoiseSuppressor } = await import('@/lib/effects/noise')
+      suppressor = new NoiseSuppressor(() => {
+        if (suppressor !== noiseSuppressor) return
+        noiseSuppressor = null
+        const rawTrack = get().rawMicTrack
+        if (rawTrack?.readyState === 'live') sendAudio(rawTrack)
+        noiseUnavailable()
+      })
+      const track = await suppressor.start(raw)
+      return { suppressor, track }
+    } catch (err) {
+      console.warn('[effects] noise suppression failed to start', err)
+      suppressor?.stop()
+      noiseUnavailable()
+      return null
+    } finally {
+      set({ noiseBusy: false })
+    }
+  }
+
+  /**
+   * A new camera track (turned on, switched, flipped): with the saved effect
+   * applied before anything is sent, so a chosen blur never shows the real
+   * background first. False if a newer camera action came in meanwhile.
+   */
+  const applyCamera = (raw: MediaStreamTrack, generation: number) =>
+    runVideo(async () => {
+      if (generation !== videoGeneration) {
+        raw.stop()
+        return false
+      }
+      const started = await startBackground(raw)
+      if (generation !== videoGeneration) {
+        started?.processor.stop()
+        raw.stop()
+        return false
+      }
+      const previousRaw = get().rawCameraTrack
+      const previous = backgroundProcessor
+      backgroundProcessor = started?.processor ?? null
+      set({ rawCameraTrack: raw })
+      sendVideo(started?.track ?? raw)
+      // After the swap, so the sender is never left holding a stopped track.
+      previous?.stop()
+      if (previousRaw && previousRaw !== raw) previousRaw.stop()
+      return true
+    })
+
+  const applyMic = (raw: MediaStreamTrack, generation: number) =>
+    runAudio(async () => {
+      if (generation !== audioGeneration) {
+        raw.stop()
+        return false
+      }
+      const started = await startNoise(raw)
+      if (generation !== audioGeneration) {
+        started?.suppressor.stop()
+        raw.stop()
+        return false
+      }
+      const previousRaw = get().rawMicTrack
+      const previous = noiseSuppressor
+      noiseSuppressor = started?.suppressor ?? null
+      set({ rawMicTrack: raw })
+      sendAudio(started?.track ?? raw)
+      previous?.stop()
+      if (previousRaw && previousRaw !== raw) previousRaw.stop()
+      return true
+    })
+
+  /** Camera off (or leaving): its effect and its device track go together. */
+  const stopCamera = () => {
+    backgroundProcessor?.stop()
+    backgroundProcessor = null
+    get().rawCameraTrack?.stop()
+    set({ rawCameraTrack: null })
+    sendVideo(null)
+  }
+  const stopMic = () => {
+    noiseSuppressor?.stop()
+    noiseSuppressor = null
+    get().rawMicTrack?.stop()
+    set({ rawMicTrack: null })
+    sendAudio(null)
   }
   const cameraConstraints = (): MediaTrackConstraints => {
     const { preferredVideoInputId, facingMode } = get()
@@ -294,6 +475,13 @@ export const usePeerStore = create<PeerState>()((set, get) => {
     knockRequests: [],
     localStream: null,
     screenTrack: null,
+    rawCameraTrack: null,
+    rawMicTrack: null,
+    backgroundEffect: readEffectPreferences().background,
+    backgroundImageUrl: null,
+    noiseSuppression: readEffectPreferences().noiseSuppression,
+    backgroundBusy: false,
+    noiseBusy: false,
     sfuSession: null,
     facingMode: 'user',
     preferredAudioInputId: saved.audioInputId ?? '',
@@ -407,12 +595,7 @@ export const usePeerStore = create<PeerState>()((set, get) => {
       const generation = ++audioGeneration
       try {
         const track = await openMic(get().preferredAudioInputId)
-        if (generation !== audioGeneration) {
-          track.stop()
-          return CANCELLED
-        }
-        replaceAudio(track)
-        return OK
+        return (await applyMic(track, generation)) ? OK : CANCELLED
       } catch (error) {
         return generation === audioGeneration ? { status: 'failed', error } : CANCELLED
       }
@@ -422,19 +605,14 @@ export const usePeerStore = create<PeerState>()((set, get) => {
       audioGeneration++
       // Silence first: stopping the track a sender is using leaves it with nothing.
       get().sfuSession?.sendPlaceholder('audio')
-      replaceAudio(null)
+      stopMic()
     },
 
     enableCamera: async () => {
       const generation = ++videoGeneration
       try {
         const track = await openCamera(cameraConstraints())
-        if (generation !== videoGeneration) {
-          track.stop()
-          return CANCELLED
-        }
-        replaceVideo(track)
-        return OK
+        return (await applyCamera(track, generation)) ? OK : CANCELLED
       } catch (error) {
         return generation === videoGeneration ? { status: 'failed', error } : CANCELLED
       }
@@ -445,7 +623,7 @@ export const usePeerStore = create<PeerState>()((set, get) => {
       // Black frames first, or everyone freezes on the last one. While sharing,
       // the sender carries the screen, which must keep going.
       if (!get().screenTrack) get().sfuSession?.sendPlaceholder('video')
-      replaceVideo(null)
+      stopCamera()
     },
 
     switchCamera: async () => {
@@ -454,11 +632,7 @@ export const usePeerStore = create<PeerState>()((set, get) => {
       const nextFacing = get().facingMode === 'user' ? 'environment' : 'user'
       try {
         const track = await openCamera({ facingMode: { ideal: nextFacing }, ...VIDEO_HINTS })
-        if (generation !== videoGeneration) {
-          track.stop()
-          return false
-        }
-        replaceVideo(track)
+        if (!(await applyCamera(track, generation))) return false
         set({ facingMode: nextFacing })
         return true
       } catch (e) {
@@ -475,11 +649,7 @@ export const usePeerStore = create<PeerState>()((set, get) => {
       if (!get().localStream?.getAudioTracks().length) return
       try {
         const track = await openMic(deviceId)
-        if (generation !== audioGeneration) {
-          track.stop()
-          return
-        }
-        replaceAudio(track)
+        await applyMic(track, generation)
       } catch (e) {
         if (generation === audioGeneration) toast.error(describeMediaError('mic', e))
       }
@@ -492,11 +662,7 @@ export const usePeerStore = create<PeerState>()((set, get) => {
       if (!get().localStream?.getVideoTracks().length) return
       try {
         const track = await openCamera({ deviceId: { exact: deviceId }, ...VIDEO_HINTS })
-        if (generation !== videoGeneration) {
-          track.stop()
-          return
-        }
-        replaceVideo(track)
+        await applyCamera(track, generation)
       } catch (e) {
         if (generation === videoGeneration) toast.error(describeMediaError('camera', e))
       }
@@ -550,12 +716,101 @@ export const usePeerStore = create<PeerState>()((set, get) => {
       set({ screenTrack: null })
     },
 
+    setBackgroundEffect: async (effect, image) => {
+      if (effect === 'image') {
+        if (!image) return false
+        const url = URL.createObjectURL(image)
+        try {
+          const { loadBackgroundImage } = await import('@/lib/effects/background')
+          backgroundImage = await loadBackgroundImage(url)
+        } catch {
+          URL.revokeObjectURL(url)
+          toast.error("That picture can't be used. Try a JPEG or PNG.", { id: 'effect-background' })
+          return false
+        }
+        const previousUrl = get().backgroundImageUrl
+        if (previousUrl) URL.revokeObjectURL(previousUrl)
+        set({ backgroundImageUrl: url })
+      }
+      set({ backgroundEffect: effect })
+      saveEffectPreferences({ background: effect })
+
+      return runVideo(async () => {
+        const raw = get().rawCameraTrack
+        // Camera off: saved, and applied when it comes on.
+        if (!raw) return get().backgroundEffect === effect
+        // A newer choice is queued behind this one; it does the work.
+        if (get().backgroundEffect !== effect) return false
+        if (effect === 'off') {
+          const previous = backgroundProcessor
+          backgroundProcessor = null
+          sendVideo(raw)
+          previous?.stop()
+          return true
+        }
+        const started = await startBackground(raw)
+        if (!started) {
+          // Fell back: the plain camera, and whatever effect ran before goes too.
+          const previous = backgroundProcessor
+          backgroundProcessor = null
+          if (get().rawCameraTrack === raw) sendVideo(raw)
+          previous?.stop()
+          return false
+        }
+        // The camera went off or changed while the effect loaded.
+        if (get().rawCameraTrack !== raw || get().backgroundEffect !== effect) {
+          started.processor.stop()
+          return false
+        }
+        const previous = backgroundProcessor
+        backgroundProcessor = started.processor
+        sendVideo(started.track)
+        previous?.stop()
+        return true
+      })
+    },
+
+    setNoiseSuppression: async (on) => {
+      set({ noiseSuppression: on })
+      saveEffectPreferences({ noiseSuppression: on })
+      return runAudio(async () => {
+        const raw = get().rawMicTrack
+        if (!raw) return get().noiseSuppression === on
+        if (get().noiseSuppression !== on) return false
+        if (!on) {
+          const previous = noiseSuppressor
+          noiseSuppressor = null
+          sendAudio(raw)
+          previous?.stop()
+          return true
+        }
+        if (noiseSuppressor) return true
+        const started = await startNoise(raw)
+        if (!started) return false
+        if (get().rawMicTrack !== raw || !get().noiseSuppression) {
+          started.suppressor.stop()
+          return false
+        }
+        noiseSuppressor = started.suppressor
+        sendAudio(started.track)
+        return true
+      })
+    },
+
     clearAll: () => {
       audioGeneration++
       videoGeneration++
+      backgroundProcessor?.stop()
+      backgroundProcessor = null
+      noiseSuppressor?.stop()
+      noiseSuppressor = null
+      get().rawCameraTrack?.stop()
+      get().rawMicTrack?.stop()
       get().localStream?.getTracks().forEach((t) => t.stop())
       get().screenTrack?.stop()
       set({
+        rawCameraTrack: null,
+        rawMicTrack: null,
         inRoom: false,
         ...EMPTY_ROOM,
         localStream: null,

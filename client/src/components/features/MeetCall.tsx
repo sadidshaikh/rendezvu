@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Loader2, Monitor, PhoneOff, Settings } from 'lucide-react'
+import { BlurButton } from '@/components/ui/BlurButton'
 import { CameraButton } from '@/components/ui/CameraButton'
 import { ConnectionBanner } from '@/components/ui/ConnectionBanner'
 import { DeviceErrorNotice } from '@/components/ui/DeviceErrorNotice'
@@ -161,6 +162,7 @@ export default function MeetCall({ meetCode, userName, client, connState, reconn
         <div className="glass-pill gap-2 px-2 py-2 shadow-xl shadow-[hsl(var(--shadow-color))]/25">
           <MicButton onClick={controls.handleMicToggle} on={!controls.isMuted} busy={controls.micBusy} />
           <CameraButton onClick={controls.handleCameraToggle} on={!controls.isVideoOff} busy={controls.cameraBusy} />
+          {!controls.isVideoOff && !controls.isSharing && <BlurButton />}
           <button
             type="button"
             onClick={() => setShowSettings((open) => !open)}

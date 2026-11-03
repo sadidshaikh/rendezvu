@@ -4,6 +4,7 @@ import { useMediaDevices } from '@/hooks/use-media-devices'
 import { usePeerStore } from '@/stores/peer'
 import { ConnectionDiagnostics } from './ConnectionDiagnostics'
 import { DevicePickers, hasAnyDevice } from './DevicePickers'
+import { EffectsSettings } from './EffectsSettings'
 
 interface SettingsPanelProps {
   onClose: () => void
@@ -11,7 +12,7 @@ interface SettingsPanelProps {
   inCall?: boolean
 }
 
-/** Side panel for call settings: devices, and in a call the connection details. Background effects join in Phase 12. */
+/** Side panel for call settings: devices, effects, and in a call the connection details. */
 export function SettingsPanel({ onClose, inCall = false }: SettingsPanelProps) {
   const panelRef = useRef<HTMLElement>(null)
   const closeRef = useRef(onClose)
@@ -61,6 +62,10 @@ export function SettingsPanel({ onClose, inCall = false }: SettingsPanelProps) {
               Turn on your microphone or camera to choose a device. Your browser lists them once you’ve allowed access.
             </p>
           )}
+        </section>
+        <section className="flex flex-col gap-3">
+          <h2 className="text-xs font-semibold tracking-widest text-muted-foreground uppercase">Effects</h2>
+          <EffectsSettings />
         </section>
         {inCall && (
           <section className="flex flex-col gap-3">

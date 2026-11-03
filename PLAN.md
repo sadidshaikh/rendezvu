@@ -316,7 +316,7 @@ Cloudflare's JSON errors are forwarded unchanged so the client can read them. Ev
 
 **You'll learn:** processing video frames in the browser, AudioWorklets, and why effects need a fallback path.
 
-**Done when:** blur and noise suppression toggle mid-call with no renegotiation, and blocking the model file falls back to normal video.
+**Done when:** blur and noise suppression toggle mid-call with no renegotiation, and blocking the model file falls back to normal video. ✅ Built; tested in headless tabs (no renegotiation on any toggle, the blocked-model fallback, blur in a hidden tab, unplugging while blurred, the saved setting after reload; see `docs/12-background-blur-and-noise-suppression.md`). Hearing the difference noise suppression makes waits for your run.
 
 ---
 
