@@ -22,6 +22,13 @@ export type MsgType =
   | 'sync'
   | 'room-snapshot'
   | 'stats-report'
+  | 'knock-pending'
+  | 'knock-request'
+  | 'knock-admit'
+  | 'knock-deny'
+  | 'knock-granted'
+  | 'knock-denied'
+  | 'knock-resolved'
 
 /**
  * Every WebSocket message, in both directions, is one JSON envelope.
@@ -58,6 +65,11 @@ export interface JoinData {
    * sent on to anyone else: it also proves which Cloudflare sessions are ours.
    */
   presenceId?: string
+  /**
+   * A host or guest token for this room. Missing or invalid means "ask to
+   * join": the server puts the browser on the room's waiting list instead.
+   */
+  token?: string
 }
 
 /** server → joining client: everyone already in the room (never yourself). */
@@ -93,7 +105,7 @@ export interface PeerLeftData {
 }
 
 /** Codes the client acts on. Errors without a code are informational. */
-export type SignalingErrorCode = 'ROOM_UNAVAILABLE' | 'ROOM_EXPIRED' | 'NOT_IN_ROOM'
+export type SignalingErrorCode = 'ROOM_UNAVAILABLE' | 'ROOM_EXPIRED' | 'NOT_IN_ROOM' | 'KNOCK_QUEUE_FULL'
 
 export interface ErrorData {
   message: string
@@ -147,6 +159,8 @@ export interface RoomSnapshotData {
 /** Response of `POST /meets/new`. */
 export interface CreateMeetResponse {
   meetCode: string
+  /** Lets the creator join without knocking. Room-scoped, 12 h. Missing from a server without admission. */
+  hostToken?: string
 }
 
 export type RoomStatus = 'open' | 'too_early' | 'ended' | 'cancelled' | 'not_found'
@@ -214,4 +228,31 @@ export interface StatsReportPeer {
 /** client → server, every 10 s while in a call with others. */
 export interface StatsReportData {
   peers: StatsReportPeer[]
+}
+
+// ─── Admission (Phase 11) ──────────────────────────────────────────────────
+// A `join` without a valid token is the knock. The server answers the guest
+// with `knock-pending` (no data) and tells the members with `knock-request`.
+
+/** server → members: someone is waiting. Also replayed to members who join later. */
+export interface KnockRequestData {
+  peerId: string
+  name: string
+}
+
+/** member → server: `knock-admit` and `knock-deny`. */
+export interface KnockAnswerData {
+  peerId: string
+}
+
+/** server → the admitted guest, right before its `joined`. */
+export interface KnockGrantedData {
+  /** A guest token for this room and this tab, 2 h. */
+  token: string
+}
+
+/** server → members: a knock ended, so its prompt closes on every screen. */
+export interface KnockResolvedData {
+  peerId: string
+  outcome: 'admitted' | 'denied' | 'left'
 }

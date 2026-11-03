@@ -22,6 +22,8 @@ export interface SfuSessionOptions {
   roomId: string
   /** This tab's id, the same across reconnects. The server ties our Cloudflare sessions to it. */
   presenceId: string
+  /** This room's host or guest token. Every /sfu request carries it; the server answers 401 without. */
+  token?: string | null
   iceServers: RTCIceServer[]
   /**
    * The full set of tracks Cloudflare has confirmed for our publish session.
@@ -91,6 +93,7 @@ const RETIRE_DELAY_MS = 5_000
 export class SfuSession {
   private readonly opts: SfuSessionOptions
   private readonly params: string
+  private readonly authHeaders: Record<string, string>
   // partytracks keeps a reference to this array and reads it whenever it
   // builds a new connection, so refreshed credentials are swapped in place.
   private readonly iceServers: RTCIceServer[]
@@ -151,6 +154,7 @@ export class SfuSession {
       `roomId=${encodeURIComponent(opts.roomId)}`,
       `presenceId=${encodeURIComponent(opts.presenceId)}`,
     ].join('&')
+    this.authHeaders = opts.token ? { Authorization: `Bearer ${opts.token}` } : {}
     this.pubTracks = this.newPubTracks()
   }
 
@@ -336,6 +340,7 @@ export class SfuSession {
       prefix: SFU_PREFIX,
       apiExtraParams: `${this.params}&kind=publish`,
       iceServers: this.iceServers,
+      headers: new Headers(this.authHeaders),
     })
   }
 
@@ -555,6 +560,7 @@ export class SfuSession {
         prefix: SFU_PREFIX,
         apiExtraParams: `${this.params}&kind=subscribe`,
         iceServers: this.iceServers,
+        headers: new Headers(this.authHeaders),
       }),
       generation: ++this.remoteGeneration,
       subscriptions: [],
@@ -842,6 +848,7 @@ export class SfuSession {
   private releaseSession(sessionId: string): void {
     void fetch(`${SFU_PREFIX}/sessions/${encodeURIComponent(sessionId)}?${this.params}`, {
       method: 'DELETE',
+      headers: this.authHeaders,
       // Still sent if the page is closing.
       keepalive: true,
     }).catch(() => {})

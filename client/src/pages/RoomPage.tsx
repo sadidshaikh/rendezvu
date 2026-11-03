@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router'
 import JoinMeet from '@/components/features/JoinMeet'
+import { KnockingScreen } from '@/components/features/KnockingScreen'
 import MeetCall from '@/components/features/MeetCall'
 import { Button } from '@/components/ui/button'
 import { CallErrorBoundary } from '@/components/ui/CallErrorBoundary'
@@ -24,6 +25,7 @@ export default function RoomPage() {
   const setUserName = useJoinMeetStore((s) => s.setUserName)
   const isMuted = useMeetStore((s) => s.isMuted)
   const isVideoOff = useMeetStore((s) => s.isVideoOff)
+  const admission = usePeerStore((s) => s.admission)
   const [stage, setStage] = useState<Stage>('lobby')
   const [roomError, setRoomError] = useState<string | null>(null)
 
@@ -39,7 +41,7 @@ export default function RoomPage() {
     setStage('lobby')
   }, [])
 
-  useCall({
+  const { askAgain } = useCall({
     client,
     roomId: meetCode,
     enabled: inCall,
@@ -58,6 +60,20 @@ export default function RoomPage() {
   const handleLeave = () => {
     setStage('left')
     releaseMedia()
+  }
+
+  // Asked to join and not let in yet: the call isn't mounted, since the
+  // server tells a waiting guest nothing about the room.
+  if (stage === 'call' && admission !== null) {
+    return (
+      <KnockingScreen
+        meetCode={meetCode}
+        userName={userName}
+        denied={admission === 'denied'}
+        onAskAgain={askAgain}
+        onCancel={handleLeave}
+      />
+    )
   }
 
   if (stage === 'call') {

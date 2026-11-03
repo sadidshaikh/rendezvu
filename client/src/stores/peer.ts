@@ -1,6 +1,14 @@
 import { create } from 'zustand'
 import { toast } from 'sonner'
-import type { CandidateType, IceServer, NetworkPressure, PeerInfo, PeerStateData, QualityGrade } from '@rendezvu/protocol'
+import type {
+  CandidateType,
+  IceServer,
+  KnockRequestData,
+  NetworkPressure,
+  PeerInfo,
+  PeerStateData,
+  QualityGrade,
+} from '@rendezvu/protocol'
 import { setAudioOutputDevice } from '@/lib/audio-context'
 import { getMicConstraints } from '@/lib/audio-constraints'
 import { getDevicePreferences, setDevicePreference } from '@/lib/device-preferences'
@@ -53,6 +61,13 @@ export interface MediaFlowEvent {
 
 const MAX_FLOW_EVENTS = 10
 
+/**
+ * Where this tab stands on getting in. Null: not knocking (in the call, or
+ * joining with a token). Waiting: asked to join, nobody has answered yet.
+ * Denied: someone in the call said no.
+ */
+export type Admission = null | 'waiting' | 'denied'
+
 /** `cancelled`: a newer action (or leaving) superseded this one; not an error. */
 export type AcquireResult = { status: 'ok' } | { status: 'cancelled' } | { status: 'failed'; error: unknown }
 
@@ -86,6 +101,9 @@ interface PeerState {
   localStats: LocalStats | null
   /** Newest first. */
   mediaFlowEvents: MediaFlowEvent[]
+  admission: Admission
+  /** People waiting to be let in. Only members are told. */
+  knockRequests: KnockRequestData[]
 
   /**
    * Our own live tracks. Replaced with a new MediaStream on every change, so
@@ -122,6 +140,9 @@ interface PeerState {
   /** One poll's numbers. Only people still in the room are kept. */
   setStats: (local: LocalStats | null, peers: Map<string, PeerStats>) => void
   recordFlowEvent: (event: Omit<MediaFlowEvent, 'id' | 'at'>) => void
+  setAdmission: (admission: Admission) => void
+  addKnockRequest: (request: KnockRequestData) => void
+  removeKnockRequest: (peerId: string) => void
   /** Forgets the room's participants, their media and ICE servers. Local media is untouched. */
   clearPeers: () => void
 
@@ -229,6 +250,8 @@ const EMPTY_ROOM = {
   peerStats: new Map<string, PeerStats>(),
   localStats: null,
   mediaFlowEvents: [] as MediaFlowEvent[],
+  admission: null as Admission,
+  knockRequests: [] as KnockRequestData[],
   iceServers: [] as IceServer[],
 }
 
@@ -267,6 +290,8 @@ export const usePeerStore = create<PeerState>()((set, get) => {
     peerStats: new Map(),
     localStats: null,
     mediaFlowEvents: [],
+    admission: null,
+    knockRequests: [],
     localStream: null,
     screenTrack: null,
     sfuSession: null,
@@ -275,8 +300,16 @@ export const usePeerStore = create<PeerState>()((set, get) => {
     preferredVideoInputId: saved.videoInputId ?? '',
     preferredAudioOutputId: saved.audioOutputId ?? '',
 
+    // A member now. The server replays everyone still waiting right after
+    // `joined`, so the list starts over rather than keeping stale entries.
     setRoster: (peers) =>
-      set((state) => ({ ...rosterFrom(state, peers), inRoom: true, joinCount: state.joinCount + 1 })),
+      set((state) => ({
+        ...rosterFrom(state, peers),
+        inRoom: true,
+        joinCount: state.joinCount + 1,
+        admission: null,
+        knockRequests: [],
+      })),
 
     syncRoster: (peers) => set((state) => rosterFrom(state, peers)),
 
@@ -353,6 +386,20 @@ export const usePeerStore = create<PeerState>()((set, get) => {
           MAX_FLOW_EVENTS,
         ),
       })),
+
+    setAdmission: (admission) => set({ admission }),
+
+    addKnockRequest: (request) =>
+      set((state) => ({
+        knockRequests: [...state.knockRequests.filter((r) => r.peerId !== request.peerId), request],
+      })),
+
+    removeKnockRequest: (peerId) =>
+      set((state) =>
+        state.knockRequests.some((r) => r.peerId === peerId)
+          ? { knockRequests: state.knockRequests.filter((r) => r.peerId !== peerId) }
+          : state,
+      ),
 
     clearPeers: () => set({ inRoom: false, ...EMPTY_ROOM }),
 

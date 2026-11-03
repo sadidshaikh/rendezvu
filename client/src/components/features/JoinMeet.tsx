@@ -22,6 +22,7 @@ import { describeMediaError } from '@/lib/media-errors'
 import { meetCodePattern } from '@/lib/room-routes'
 import { cn } from '@/lib/utils'
 import { fetchRoomStatus, type LobbyRoomStatus } from '@/services/api/room'
+import { getRoomToken } from '@/services/api/room-token'
 import { useJoinMeetStore } from '@/stores/join-meet'
 import { useMeetStore } from '@/stores/meet'
 import { usePeerStore } from '@/stores/peer'
@@ -35,6 +36,8 @@ interface JoinMeetProps {
 
 export default function JoinMeet({ meetCode, roomError, onJoin }: JoinMeetProps) {
   const { userName, setUserName } = useJoinMeetStore()
+  // Without a token for this room, joining is asking: someone inside lets you in.
+  const [hasToken] = useState(() => getRoomToken(meetCode) !== null)
   const [roomStatus, setRoomStatus] = useState<LobbyRoomStatus | null>(null)
   const [statusChecked, setStatusChecked] = useState(false)
   const [deviceError, setDeviceError] = useState<string | null>(null)
@@ -114,7 +117,8 @@ export default function JoinMeet({ meetCode, roomError, onJoin }: JoinMeetProps)
     if (!joinName || !canJoinMeet) return
     // Inside the click, so iOS lets the shared AudioContext run.
     resumeSharedAudioContext()
-    playJoinCall()
+    // A guest hears it on being let in instead.
+    if (hasToken) playJoinCall()
     onJoin(joinName)
   }
 
@@ -238,9 +242,13 @@ export default function JoinMeet({ meetCode, roomError, onJoin }: JoinMeetProps)
                     maxLength={40}
                   />
                   <Button onClick={handleJoin} disabled={!joinName} size="lg" className="w-full">
-                    Join now
+                    {hasToken ? 'Join now' : 'Ask to join'}
                   </Button>
-                  <p className="text-center text-xs text-muted-foreground">Check your camera and microphone before joining.</p>
+                  <p className="text-center text-xs text-muted-foreground">
+                    {hasToken
+                      ? 'Check your camera and microphone before joining.'
+                      : 'Someone in the call will need to let you in.'}
+                  </p>
                 </div>
               )}
             </div>

@@ -6,6 +6,7 @@ import { StreamVideo } from '@/components/ui/StreamVideo'
 import { describeMediaError } from '@/lib/media-errors'
 import { fetchIceServers } from '@/services/api/ice'
 import { createMeet } from '@/services/api/meet'
+import { getRoomToken } from '@/services/api/room-token'
 import type { SignalingClient } from '@/services/signaling/client'
 import { joinRoom } from '@/services/signaling/join-room'
 import { SfuSession } from '@/services/webrtc/sfu-session'
@@ -113,6 +114,7 @@ export function SfuLoopbackCheck() {
         const sfu = new SfuSession({
           roomId: meetCode,
           presenceId: client.getPresenceId(),
+          token: getRoomToken(meetCode),
           iceServers: servers,
           onLocalTracksChanged: (a) => {
             clearTimeout(timer)

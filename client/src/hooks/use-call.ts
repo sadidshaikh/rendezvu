@@ -5,6 +5,9 @@ import type {
   IceServer,
   JoinData,
   JoinedData,
+  KnockGrantedData,
+  KnockRequestData,
+  KnockResolvedData,
   PeerJoinedData,
   PeerLeftData,
   PeerStateData,
@@ -13,8 +16,9 @@ import type {
   StatsReportData,
   StatsReportPeer,
 } from '@rendezvu/protocol'
-import { playPeerJoined, playPeerLeft, playScreenShareStart, playScreenShareStop } from '@/lib/sounds'
+import { playJoinCall, playKnock, playPeerJoined, playPeerLeft, playScreenShareStart, playScreenShareStop } from '@/lib/sounds'
 import { fetchIceServers, startIceServerKeepalive } from '@/services/api/ice'
+import { getRoomToken, saveGuestToken } from '@/services/api/room-token'
 import type { SignalingClient } from '@/services/signaling/client'
 import { CallReconciler } from '@/services/webrtc/call-reconciler'
 import { SfuSession, type RepairInfo } from '@/services/webrtc/sfu-session'
@@ -70,6 +74,8 @@ export function useCall({ client, roomId, enabled, userName, initialAudio, initi
   joinArgs.current = { userName, initialAudio, initialVideo }
   const onRoomErrorRef = useRef(onRoomError)
   onRoomErrorRef.current = onRoomError
+  // Set while the effect runs: asks to join again after a deny.
+  const askAgainRef = useRef<() => void>(() => {})
 
   useEffect(() => {
     if (!client || !enabled) return
@@ -101,6 +107,8 @@ export function useCall({ client, roomId, enabled, userName, initialAudio, initi
       sfu = new SfuSession({
         roomId,
         presenceId: client.getPresenceId(),
+        // Only after `joined`, so a guest's token from knock-granted is already saved.
+        token: getRoomToken(roomId),
         iceServers: servers.length > 0 ? servers : STUN_FALLBACK,
         // Sent only once Cloudflare confirms, so nobody subscribes to a track that isn't live.
         onLocalTracksChanged: (announcement) => client.send<SfuTracksData>('sfu-announce', announcement, { room: roomId }),
@@ -350,10 +358,35 @@ export function useCall({ client, roomId, enabled, userName, initialAudio, initi
         .map((t) => ({ peerId: t.peerId, sessionId: t.sessionId, trackNames: t.tracks.map((x) => x.trackName) }))
       if (reconciler.applySnapshot(entries, d.version)) reconciler.reconcile()
     }
+    // Admission. Without a token our join is a knock: we wait, and see
+    // nothing of the room until someone in it lets us in.
+    const handleKnockPending = () => store().setAdmission('waiting')
+    // The room's normal `joined` follows; the token makes every later request (and rejoin) ours.
+    const handleKnockGranted = (env: { data?: KnockGrantedData }) => {
+      if (env.data?.token) saveGuestToken(roomId, env.data.token)
+      playJoinCall()
+    }
+    const handleKnockDenied = () => store().setAdmission('denied')
+    // Members only: someone is waiting, or stopped waiting.
+    const handleKnockRequest = (env: { data?: KnockRequestData }) => {
+      const d = env.data
+      if (!d?.peerId) return
+      const known = store().knockRequests.some((r) => r.peerId === d.peerId)
+      store().addKnockRequest({ peerId: d.peerId, name: d.name ?? '' })
+      if (!known) playKnock()
+    }
+    const handleKnockResolved = (env: { data?: KnockResolvedData }) => {
+      if (env.data?.peerId) store().removeKnockRequest(env.data.peerId)
+    }
+
     const handleError = (env: { data?: ErrorData }) => {
       const d = env.data
       if (d?.code?.startsWith('ROOM_')) {
         onRoomErrorRef.current(d.message)
+        return
+      }
+      if (d?.code === 'KNOCK_QUEUE_FULL') {
+        onRoomErrorRef.current('This call has too many people waiting. Try again in a minute.')
         return
       }
       console.warn('signaling error:', d?.message)
@@ -366,13 +399,32 @@ export function useCall({ client, roomId, enabled, userName, initialAudio, initi
     client.on('sfu-tracks', handleSfuTracks)
     client.on('room-snapshot', handleRoomSnapshot)
     client.on('error', handleError)
+    client.on('knock-pending', handleKnockPending)
+    client.on('knock-granted', handleKnockGranted)
+    client.on('knock-denied', handleKnockDenied)
+    client.on('knock-request', handleKnockRequest)
+    client.on('knock-resolved', handleKnockResolved)
 
+    // Read the token on every join: a guest admitted earlier rejoins with it after a reconnect.
     const sendJoin = (audio: boolean, video: boolean) =>
       client.send<JoinData>(
         'join',
-        { name: joinArgs.current.userName, audio, video, presenceId: client.getPresenceId() },
+        {
+          name: joinArgs.current.userName,
+          audio,
+          video,
+          presenceId: client.getPresenceId(),
+          token: getRoomToken(roomId) ?? undefined,
+        },
         { room: roomId },
       )
+
+    askAgainRef.current = () => {
+      if (disposed || store().admission !== 'denied') return
+      const media = useMeetStore.getState()
+      store().setAdmission('waiting')
+      sendJoin(!media.isMuted, !media.isVideoOff)
+    }
 
     // Only the WebSocket dropped. The SFU session, our publish connection and
     // every pull carry on; tearing them down would turn a blip into an outage.
@@ -414,9 +466,17 @@ export function useCall({ client, roomId, enabled, userName, initialAudio, initi
       client.off('sfu-tracks', handleSfuTracks)
       client.off('room-snapshot', handleRoomSnapshot)
       client.off('error', handleError)
+      client.off('knock-pending', handleKnockPending)
+      client.off('knock-granted', handleKnockGranted)
+      client.off('knock-denied', handleKnockDenied)
+      client.off('knock-request', handleKnockRequest)
+      client.off('knock-resolved', handleKnockResolved)
+      askAgainRef.current = () => {}
       client.onReconnected = undefined
       client.send('leave', undefined, { room: roomId })
       store().clearPeers()
     }
   }, [client, roomId, enabled])
+
+  return { askAgain: () => askAgainRef.current() }
 }

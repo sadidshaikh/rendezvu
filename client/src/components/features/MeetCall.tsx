@@ -8,6 +8,7 @@ import { FlipCameraButton } from '@/components/ui/FlipCameraButton'
 import { MicButton } from '@/components/ui/MicButton'
 import { RemoteAudio } from '@/components/ui/RemoteAudio'
 import { ScreenShareButton, canShareScreen } from '@/components/ui/ScreenShareButton'
+import { KnockPrompt } from '@/components/ui/KnockPrompt'
 import { SettingsPanel } from '@/components/ui/SettingsPanel'
 import { ShareLinkButton } from '@/components/ui/ShareLinkButton'
 import { VideoGrid } from '@/components/ui/VideoGrid'
@@ -98,6 +99,7 @@ export default function MeetCall({ meetCode, userName, client, connState, reconn
       </header>
 
       <ConnectionBanner connState={connState} reconnectAttempt={reconnectAttempt} />
+      <KnockPrompt client={client} roomId={meetCode} />
 
       <main className="flex min-h-0 flex-1 flex-col px-3">
         {!inRoom ? (

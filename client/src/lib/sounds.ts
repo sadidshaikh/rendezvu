@@ -93,3 +93,11 @@ export function playScreenShareStop(): void {
     tone(c, 392, 0.08, 0.14, 0.09)
   })
 }
+
+/** Two even taps: someone is asking to join. */
+export function playKnock(): void {
+  playOnce('knock', (c) => {
+    tone(c, 659, 0.12, 0.08, 0)
+    tone(c, 659, 0.12, 0.08, 0.16)
+  })
+}

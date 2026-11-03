@@ -1,6 +1,7 @@
 import type { IceServer, IceServersRequest, IceServersResponse } from '@rendezvu/protocol'
 import { httpServerUri } from '@/lib/config'
 import { parseApiError } from './http'
+import { authHeaders } from './room-token'
 
 const FETCH_TIMEOUT_MS = 5_000
 const MAX_ATTEMPTS = 3
@@ -24,7 +25,8 @@ export async function fetchIceServers(roomId: string): Promise<IceServer[]> {
       const res = await fetch(`${httpServerUri}/ice-servers`, {
         method: 'POST',
         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-        headers: { 'Content-Type': 'application/json' },
+        // Read on every attempt: a guest's token arrives on admission.
+        headers: { 'Content-Type': 'application/json', ...authHeaders(roomId) },
         body: JSON.stringify(body),
       })
       if (!res.ok) throw await parseApiError(res)
