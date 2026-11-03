@@ -1,3 +1,5 @@
+import type { CandidateType, NetworkPressure, QualityGrade } from '@rendezvu/protocol'
+
 export type FlowDirection = 'publish' | 'subscribe'
 export type FlowKind = 'audio' | 'video'
 
@@ -28,11 +30,33 @@ export interface FlowStall {
   vanished?: boolean
 }
 
+/** One connection's numbers at one poll. Rates and loss cover the time since the previous poll. */
+export interface TransportSample {
+  sourceId: string
+  direction: FlowDirection
+  sessionId?: string
+  outboundKbps: number
+  inboundKbps: number
+  /** Share of inbound packets lost since the last poll, not since the call started. */
+  packetLossPercent: number
+  /** Of the ICE pair in use. -1 until measured. */
+  roundTripTimeMs: number
+  /** Inbound, the worst stream. */
+  jitterMs: number
+  candidateType: CandidateType
+  /** Received video. */
+  frameWidth?: number
+  frameHeight?: number
+  framesPerSecond?: number
+}
+
 export interface StatsMonitorOptions {
   /** Called on every poll, so connections created mid-call are picked up. */
   collect: () => Promise<StatsSource[]>
   onStall: (stall: FlowStall) => void
   onRecover: (stall: FlowStall) => void
+  /** Once per poll, one sample per connection. */
+  onPoll?: (samples: TransportSample[]) => void
 }
 
 export interface StatsMonitor {
@@ -54,6 +78,10 @@ interface StreamRecord {
   sessionId?: string
   kind: FlowKind
   bytes: number
+  /** The report's own clock for `bytes`, so a late poll still gives the right rate. */
+  statsTs: number
+  packetsReceived: number
+  packetsLost: number
   /** The poll that last saw this stream in a report. */
   lastSeenAt: number
   /** The poll that last saw its bytes go up. */
@@ -69,11 +97,28 @@ interface StreamRecord {
 
 interface RtpStats {
   type: string
+  timestamp: number
   ssrc?: number
   kind?: string
   mediaType?: string
   bytesSent?: number
   bytesReceived?: number
+  packetsReceived?: number
+  packetsLost?: number
+  jitter?: number
+  frameWidth?: number
+  frameHeight?: number
+  framesPerSecond?: number
+}
+
+interface PairStats {
+  type: string
+  state?: string
+  nominated?: boolean
+  currentRoundTripTime?: number
+  localCandidateId?: string
+  selectedCandidatePairId?: string
+  candidateType?: string
 }
 
 /**
@@ -118,12 +163,21 @@ export function startStatsMonitor(opts: StatsMonitorOptions): StatsMonitor {
     const live = new Map(sources.map((s) => [s.id, s]))
     for (const [key, r] of streams) if (!live.has(r.sourceId)) streams.delete(key)
 
-    for (const source of sources) readSource(source, t, late)
+    const samples = sources.map((source) => readSource(source, t, late))
     findVanished(live, t, late)
+    if (samples.length > 0) opts.onPoll?.(samples)
   }
 
-  const readSource = (source: StatsSource, t: number, late: boolean) => {
+  const readSource = (source: StatsSource, t: number, late: boolean): TransportSample => {
     const liveOut = new Set(source.liveOutboundKinds)
+    let outBits = 0
+    let inBits = 0
+    let received = 0
+    let lost = 0
+    let jitterMs = 0
+    let frameWidth: number | undefined
+    let frameHeight: number | undefined
+    let framesPerSecond: number | undefined
     source.report.forEach((raw: unknown) => {
       const s = raw as RtpStats
       const outbound = s.type === 'outbound-rtp'
@@ -141,6 +195,9 @@ export function startStatsMonitor(opts: StatsMonitorOptions): StatsMonitor {
         sessionId: source.sessionId,
         kind,
         bytes,
+        statsTs: s.timestamp,
+        packetsReceived: s.packetsReceived ?? 0,
+        packetsLost: s.packetsLost ?? 0,
         lastSeenAt: t,
         lastFlowAt: t,
         everFlowed: false,
@@ -148,7 +205,29 @@ export function startStatsMonitor(opts: StatsMonitorOptions): StatsMonitor {
         stalledSince: 0,
       }
       const flowing = prev !== undefined && bytes > prev.bytes
+      if (prev) {
+        // bytes × 8 / ms is kilobits per second.
+        const ms = s.timestamp > prev.statsTs ? s.timestamp - prev.statsTs : POLL_MS
+        const kbps = flowing ? ((bytes - prev.bytes) * 8) / ms : 0
+        if (outbound) outBits += kbps
+        else {
+          inBits += kbps
+          received += Math.max(0, (s.packetsReceived ?? 0) - prev.packetsReceived)
+          lost += Math.max(0, (s.packetsLost ?? 0) - prev.packetsLost)
+        }
+      }
+      if (!outbound) {
+        if (typeof s.jitter === 'number') jitterMs = Math.max(jitterMs, s.jitter * 1000)
+        if (kind === 'video') {
+          frameWidth = s.frameWidth ?? frameWidth
+          frameHeight = s.frameHeight ?? frameHeight
+          framesPerSecond = s.framesPerSecond ?? framesPerSecond
+        }
+      }
       record.bytes = bytes
+      record.statsTs = s.timestamp
+      record.packetsReceived = s.packetsReceived ?? 0
+      record.packetsLost = s.packetsLost ?? 0
       record.lastSeenAt = t
       streams.set(key, record)
 
@@ -180,6 +259,22 @@ export function startStatsMonitor(opts: StatsMonitorOptions): StatsMonitor {
         opts.onStall(stallOf(record, t - record.lastFlowAt))
       }
     })
+
+    const { rttMs, candidateType } = readPath(source.report)
+    return {
+      sourceId: source.id,
+      direction: source.direction,
+      sessionId: source.sessionId,
+      outboundKbps: round(outBits),
+      inboundKbps: round(inBits),
+      packetLossPercent: received + lost > 0 ? round((lost / (received + lost)) * 100) : 0,
+      roundTripTimeMs: rttMs,
+      jitterMs: round(jitterMs),
+      candidateType,
+      frameWidth,
+      frameHeight,
+      framesPerSecond: framesPerSecond === undefined ? undefined : Math.round(framesPerSecond),
+    }
   }
 
   /**
@@ -228,4 +323,58 @@ export function startStatsMonitor(opts: StatsMonitorOptions): StatsMonitor {
 
 function stallOf(r: StreamRecord, ms: number): FlowStall {
   return { sourceId: r.sourceId, direction: r.direction, sessionId: r.sessionId, kind: r.kind, stalledForMs: Math.round(ms) }
+}
+
+/** RTT and route of the ICE pair in use: named on the transport (Chrome), or the nominated one (Firefox). */
+function readPath(report: RTCStatsReport): { rttMs: number; candidateType: CandidateType } {
+  let pair: PairStats | undefined
+  report.forEach((raw: unknown) => {
+    const s = raw as PairStats
+    if (s.type === 'transport' && s.selectedCandidatePairId) pair = report.get(s.selectedCandidatePairId)
+  })
+  if (!pair) {
+    report.forEach((raw: unknown) => {
+      const s = raw as PairStats
+      if (s.type === 'candidate-pair' && s.state === 'succeeded' && (s.nominated || !pair)) pair = s
+    })
+  }
+  const rtt = pair?.currentRoundTripTime
+  const local = pair?.localCandidateId ? (report.get(pair.localCandidateId) as PairStats | undefined) : undefined
+  const type = local?.candidateType
+  return {
+    rttMs: typeof rtt === 'number' && Number.isFinite(rtt) ? round(rtt * 1000) : -1,
+    candidateType: type === 'host' || type === 'srflx' || type === 'relay' ? type : type === 'prflx' ? 'srflx' : 'unknown',
+  }
+}
+
+function round(n: number): number {
+  return Math.round(n * 10) / 10
+}
+
+// The same boundaries colour the numbers in the diagnostics panel, so a red
+// latency there and a red dot on the tile never disagree.
+export const RTT_GOOD_MS = 200
+export const RTT_MEDIUM_MS = 400
+export const LOSS_GOOD_PCT = 2
+export const LOSS_MEDIUM_PCT = 5
+
+/**
+ * For the tile dot. `videoFps` only when that person says their camera is on
+ * (and not held): 0 frames arriving then is poor whatever the network says.
+ */
+export function gradeQuality(rttMs: number, lossPercent: number, videoFps?: number): QualityGrade {
+  if (videoFps !== undefined && videoFps <= 0) return 'poor'
+  if (rttMs < 0) return 'unknown'
+  if (rttMs < RTT_GOOD_MS && lossPercent < LOSS_GOOD_PCT) return 'good'
+  if (rttMs < RTT_MEDIUM_MS && lossPercent < LOSS_MEDIUM_PCT) return 'medium'
+  return 'poor'
+}
+
+/** How much headroom is left, for the diagnostics panel. */
+export function gradeNetworkPressure(rttMs: number, lossPercent: number): NetworkPressure {
+  if (rttMs < 0) return 'unknown'
+  if (lossPercent < 1 && rttMs < 150) return 'low'
+  if (lossPercent < 3 && rttMs < 300) return 'medium'
+  if (lossPercent < 8 && rttMs < 600) return 'high'
+  return 'severe'
 }

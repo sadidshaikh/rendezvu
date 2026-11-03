@@ -41,6 +41,7 @@ export default function MeetCall({ meetCode, userName, client, connState, reconn
   const screenTrack = usePeerStore((s) => s.screenTrack)
   const remoteStreams = usePeerStore((s) => s.remoteStreams)
   const mediaReconnecting = usePeerStore((s) => s.mediaReconnecting)
+  const peerStats = usePeerStore((s) => s.peerStats)
   const controls = useCallControls(client, meetCode)
   const devices = useMediaDevices(localStream)
   const [showSettings, setShowSettings] = useState(false)
@@ -129,6 +130,7 @@ export default function MeetCall({ meetCode, userName, client, connState, reconn
                 // Their stated camera or share decides; the track alone can't
                 // tell "camera off" from the black frames sent in its place.
                 wantsVideo={p.video || p.screenSharing}
+                quality={peerStats.get(p.id)?.quality}
                 muted={!p.audio}
                 speaking={p.speaking}
                 screenSharing={p.screenSharing}
@@ -185,7 +187,7 @@ export default function MeetCall({ meetCode, userName, client, connState, reconn
         </div>
       </footer>
 
-      {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
+      {showSettings && <SettingsPanel inCall onClose={() => setShowSettings(false)} />}
     </div>
   )
 }

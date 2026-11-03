@@ -4,6 +4,8 @@ import { Avatar } from '@/components/ui/Avatar'
 import { StreamVideo } from '@/components/ui/StreamVideo'
 import { initialsOf } from '@/lib/avatar'
 import { cn } from '@/lib/utils'
+import type { QualityGrade } from '@rendezvu/protocol'
+import { QUALITY_LABEL, QualityDot } from './QualityDot'
 
 // The sender already holds `speaking` for 280 ms. Holding again here keeps a
 // `false` that arrives a moment early from making the outline flicker.
@@ -24,6 +26,8 @@ interface VideoTileProps {
   compact?: boolean
   /** Their media is being repaired. The video stays on its last frame meanwhile. */
   reconnecting?: boolean
+  /** Our connection to them. The dot shows only for medium and poor. */
+  quality?: QualityGrade
 }
 
 /**
@@ -42,6 +46,7 @@ export function VideoTile({
   pinned = false,
   compact = false,
   reconnecting = false,
+  quality,
 }: VideoTileProps) {
   const name = rawName || (isLocal ? 'You' : 'Participant')
   const label = isLocal ? `${name} (you)` : name
@@ -144,6 +149,14 @@ export function VideoTile({
 
       {!compact && (
         <div className="absolute top-2.5 right-2.5 z-10 flex items-center gap-1.5">
+          {(quality === 'medium' || quality === 'poor') && (
+            <div
+              title={QUALITY_LABEL[quality]}
+              className="flex size-7 items-center justify-center rounded-full border border-white/25 bg-zinc-950/75 shadow-lg shadow-black/25 backdrop-blur-md"
+            >
+              <QualityDot quality={quality} />
+            </div>
+          )}
           <div
             role="img"
             aria-label={muted ? 'Microphone muted' : 'Microphone on'}

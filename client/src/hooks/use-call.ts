@@ -10,15 +10,24 @@ import type {
   PeerStateData,
   RoomSnapshotData,
   SfuTracksData,
+  StatsReportData,
+  StatsReportPeer,
 } from '@rendezvu/protocol'
 import { playPeerJoined, playPeerLeft, playScreenShareStart, playScreenShareStop } from '@/lib/sounds'
 import { fetchIceServers, startIceServerKeepalive } from '@/services/api/ice'
 import type { SignalingClient } from '@/services/signaling/client'
 import { CallReconciler } from '@/services/webrtc/call-reconciler'
 import { SfuSession, type RepairInfo } from '@/services/webrtc/sfu-session'
-import { startStatsMonitor, type FlowStall, type StatsMonitor } from '@/services/webrtc/stats-monitor'
+import {
+  gradeNetworkPressure,
+  gradeQuality,
+  startStatsMonitor,
+  type FlowStall,
+  type StatsMonitor,
+  type TransportSample,
+} from '@/services/webrtc/stats-monitor'
 import { useMeetStore } from '@/stores/meet'
-import { usePeerStore } from '@/stores/peer'
+import { usePeerStore, type LocalStats, type PeerStats } from '@/stores/peer'
 
 interface Args {
   client: SignalingClient | null
@@ -37,6 +46,9 @@ const ICE_RETRY_DELAY_MS = 1_000
 // back to this on a Cloudflare failure). Without any STUN server the browser
 // offers host candidates only, which can't reach Cloudflare from behind NAT.
 const STUN_FALLBACK: IceServer[] = [{ urls: ['stun:stun.l.google.com:19302'] }]
+// The dot updates every 2 s poll; the server only needs a coarse view, so
+// one small report per participant every 10 s.
+const STATS_REPORT_EVERY_N_POLLS = 5
 
 /** One console line per repair event: whether rung 1 fixes things, or everything ends up rebuilding. */
 function describeRepair(info: RepairInfo): string {
@@ -129,19 +141,96 @@ export function useCall({ client, roomId, enabled, userName, initialAudio, initi
       })
       // Pull everyone whose tracks were announced while we were getting here.
       reconciler.reconcile()
+      let pollsSinceReport = 0
       statsMonitor = startStatsMonitor({
         collect: () => session.collectStats(),
         onStall: (stall) => {
           if (disposed || !stallMatters(stall)) return
           console.warn('[stats] stalled', stall.direction, stall.kind, `${stall.stalledForMs} ms`, stall.vanished ? '(vanished)' : '')
+          recordFlow(stall, 'stalled')
           session.repairStalledFlow(stall.direction, stall.sessionId)
         },
         onRecover: (stall) => {
           if (disposed) return
           console.info('[stats] flowing again', stall.direction, stall.kind, `after ${stall.stalledForMs} ms`)
+          if (stallMatters(stall)) recordFlow(stall, 'recovered')
           session.settleStalledFlow(stall.direction, stall.sessionId)
         },
+        onPoll: (samples) => {
+          if (disposed) return
+          const report = applySamples(samples)
+          pollsSinceReport++
+          if (report.length > 0 && pollsSinceReport >= STATS_REPORT_EVERY_N_POLLS) {
+            pollsSinceReport = 0
+            client.send<StatsReportData>('stats-report', { peers: report }, { room: roomId })
+          }
+        },
       })
+    }
+
+    const recordFlow = (stall: FlowStall, outcome: 'stalled' | 'recovered') => {
+      const peerId = stall.sessionId ? reconciler.peerForSession(stall.sessionId) : undefined
+      store().recordFlowEvent({
+        direction: stall.direction,
+        kind: stall.kind,
+        outcome,
+        durationMs: stall.stalledForMs,
+        peerName: peerId ? store().peers.get(peerId)?.name : undefined,
+      })
+    }
+
+    /**
+     * One poll into the store (the dots and the panel), and the entries for
+     * the next stats-report. Our uplink is one stream to the SFU shared by
+     * everyone, so it is reported once, not per person.
+     */
+    const applySamples = (samples: TransportSample[]): StatsReportPeer[] => {
+      const pub = samples.find((s) => s.direction === 'publish')
+      const local: LocalStats | null = pub
+        ? { outboundBitrateKbps: pub.outboundKbps, roundTripTimeMs: pub.roundTripTimeMs, candidateType: pub.candidateType, timestamp: Date.now() }
+        : null
+      const stats = new Map<string, PeerStats>()
+      const report: StatsReportPeer[] = []
+      for (const s of samples) {
+        if (s.direction !== 'subscribe' || !s.sessionId) continue
+        const peerId = reconciler.peerForSession(s.sessionId)
+        const peer = peerId ? store().peers.get(peerId) : undefined
+        if (!peerId || !peer) continue
+        // A subscribe connection that hasn't measured its own path yet borrows our uplink's.
+        const rtt = s.roundTripTimeMs >= 0 ? s.roundTripTimeMs : (pub?.roundTripTimeMs ?? -1)
+        const candidateType = s.candidateType !== 'unknown' ? s.candidateType : (pub?.candidateType ?? 'unknown')
+        // Only a camera they say is on can be judged by its frame rate.
+        const expectsFrames = peer.video && !peer.screenSharing
+        const entry: PeerStats = {
+          quality: gradeQuality(rtt, s.packetLossPercent, expectsFrames ? s.framesPerSecond : undefined),
+          networkPressure: gradeNetworkPressure(rtt, s.packetLossPercent),
+          roundTripTimeMs: rtt,
+          packetLossPercent: s.packetLossPercent,
+          jitterMs: s.jitterMs,
+          inboundBitrateKbps: s.inboundKbps,
+          candidateType,
+          frameWidth: s.frameWidth,
+          frameHeight: s.frameHeight,
+          framesPerSecond: s.framesPerSecond,
+        }
+        stats.set(peerId, entry)
+        report.push({
+          peerId,
+          quality: entry.quality,
+          networkPressure: entry.networkPressure,
+          roundTripTimeMs: entry.roundTripTimeMs,
+          packetLossPercent: entry.packetLossPercent,
+          jitterMs: entry.jitterMs,
+          outboundBitrateKbps: pub?.outboundKbps ?? 0,
+          inboundBitrateKbps: entry.inboundBitrateKbps,
+          candidateType,
+          frameWidth: entry.frameWidth,
+          frameHeight: entry.frameHeight,
+          framesPerSecond: entry.framesPerSecond,
+        })
+      }
+      store().setStats(local, stats)
+      return report
     }
 
     /**
@@ -216,7 +305,13 @@ export function useCall({ client, roomId, enabled, userName, initialAudio, initi
     const handlePeerJoined = (env: { data?: PeerJoinedData }) => {
       const d = env.data
       if (!d) return
-      store().addPeer({ id: d.peerId, name: d.name, audio: d.audio, video: d.video, screenSharing: d.screenSharing })
+      store().addPeer({
+        id: d.peerId,
+        name: d.name,
+        audio: d.audio,
+        video: d.video,
+        screenSharing: d.screenSharing,
+      })
       playPeerJoined()
     }
     const handlePeerState = (env: { from?: string; data?: PeerStateData }) => {

@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { toast } from 'sonner'
-import type { IceServer, PeerInfo, PeerStateData } from '@rendezvu/protocol'
+import type { CandidateType, IceServer, NetworkPressure, PeerInfo, PeerStateData, QualityGrade } from '@rendezvu/protocol'
 import { setAudioOutputDevice } from '@/lib/audio-context'
 import { getMicConstraints } from '@/lib/audio-constraints'
 import { getDevicePreferences, setDevicePreference } from '@/lib/device-preferences'
@@ -16,6 +16,42 @@ export interface RemotePeer {
   screenSharing: boolean
   speaking: boolean
 }
+
+/** Our connection to one other person, from the last stats poll. */
+export interface PeerStats {
+  quality: QualityGrade
+  networkPressure: NetworkPressure
+  roundTripTimeMs: number
+  packetLossPercent: number
+  jitterMs: number
+  inboundBitrateKbps: number
+  candidateType: CandidateType
+  frameWidth?: number
+  frameHeight?: number
+  framesPerSecond?: number
+}
+
+/** Our uplink: one stream to the SFU, shared by everyone. */
+export interface LocalStats {
+  outboundBitrateKbps: number
+  roundTripTimeMs: number
+  candidateType: CandidateType
+  /** When this poll ran, for "x s ago" in the panel. */
+  timestamp: number
+}
+
+/** A stall or recovery from the Phase 9 monitor, for "Recent interruptions". */
+export interface MediaFlowEvent {
+  id: number
+  at: number
+  direction: 'publish' | 'subscribe'
+  kind: 'audio' | 'video'
+  outcome: 'stalled' | 'recovered'
+  durationMs: number
+  peerName?: string
+}
+
+const MAX_FLOW_EVENTS = 10
 
 /** `cancelled`: a newer action (or leaving) superseded this one; not an error. */
 export type AcquireResult = { status: 'ok' } | { status: 'cancelled' } | { status: 'failed'; error: unknown }
@@ -46,6 +82,10 @@ interface PeerState {
   remoteStreams: Map<string, MediaStream>
   /** People whose media is being repaired right now. Their tile shows "Reconnecting…". */
   mediaReconnecting: Set<string>
+  peerStats: Map<string, PeerStats>
+  localStats: LocalStats | null
+  /** Newest first. */
+  mediaFlowEvents: MediaFlowEvent[]
 
   /**
    * Our own live tracks. Replaced with a new MediaStream on every change, so
@@ -79,6 +119,9 @@ interface PeerState {
   /** No-op if that track was already replaced. */
   removeRemoteTrack: (peerId: string, track: MediaStreamTrack) => void
   setMediaReconnecting: (peerId: string, reconnecting: boolean) => void
+  /** One poll's numbers. Only people still in the room are kept. */
+  setStats: (local: LocalStats | null, peers: Map<string, PeerStats>) => void
+  recordFlowEvent: (event: Omit<MediaFlowEvent, 'id' | 'at'>) => void
   /** Forgets the room's participants, their media and ICE servers. Local media is untouched. */
   clearPeers: () => void
 
@@ -104,18 +147,29 @@ function streamOf(tracks: MediaStreamTrack[]): MediaStream | null {
 }
 
 function remotePeer(p: PeerInfo): RemotePeer {
-  return { id: p.id, name: p.name, audio: p.audio, video: p.video, screenSharing: p.screenSharing ?? false, speaking: false }
+  return {
+    id: p.id,
+    name: p.name,
+    audio: p.audio,
+    video: p.video,
+    screenSharing: p.screenSharing ?? false,
+    speaking: false,
+  }
 }
 
 /**
  * The roster as `peers` says, keeping each known person's `speaking` (it
  * isn't stored on the server) and dropping the media of anyone gone.
  */
-function rosterFrom(state: Pick<PeerState, 'peers' | 'remoteStreams' | 'mediaReconnecting'>, peers: PeerInfo[]) {
+function rosterFrom(
+  state: Pick<PeerState, 'peers' | 'remoteStreams' | 'mediaReconnecting' | 'peerStats'>,
+  peers: PeerInfo[],
+) {
   const next = new Map(peers.map((p) => [p.id, { ...remotePeer(p), speaking: state.peers.get(p.id)?.speaking ?? false }]))
   const remoteStreams = new Map([...state.remoteStreams].filter(([id]) => next.has(id)))
   const mediaReconnecting = new Set([...state.mediaReconnecting].filter((id) => next.has(id)))
-  return { peers: next, remoteStreams, mediaReconnecting }
+  const peerStats = new Map([...state.peerStats].filter(([id]) => next.has(id)))
+  return { peers: next, remoteStreams, mediaReconnecting, peerStats }
 }
 
 function errorName(error: unknown): string {
@@ -167,6 +221,17 @@ async function openCamera(constraints: MediaTrackConstraints): Promise<MediaStre
   }
 }
 
+/** Everything about the room and the call's connections, as it is before joining. */
+const EMPTY_ROOM = {
+  peers: new Map<string, RemotePeer>(),
+  remoteStreams: new Map<string, MediaStream>(),
+  mediaReconnecting: new Set<string>(),
+  peerStats: new Map<string, PeerStats>(),
+  localStats: null,
+  mediaFlowEvents: [] as MediaFlowEvent[],
+  iceServers: [] as IceServer[],
+}
+
 export const usePeerStore = create<PeerState>()((set, get) => {
   const saved = getDevicePreferences()
   // Opening a device is async and the permission prompt can stay open for a
@@ -199,6 +264,9 @@ export const usePeerStore = create<PeerState>()((set, get) => {
     iceServers: [],
     remoteStreams: new Map(),
     mediaReconnecting: new Set(),
+    peerStats: new Map(),
+    localStats: null,
+    mediaFlowEvents: [],
     localStream: null,
     screenTrack: null,
     sfuSession: null,
@@ -239,7 +307,9 @@ export const usePeerStore = create<PeerState>()((set, get) => {
         remoteStreams.delete(id)
         const mediaReconnecting = new Set(state.mediaReconnecting)
         mediaReconnecting.delete(id)
-        return { peers, remoteStreams, mediaReconnecting }
+        const peerStats = new Map(state.peerStats)
+        peerStats.delete(id)
+        return { peers, remoteStreams, mediaReconnecting, peerStats }
       }),
 
     setIceServers: (iceServers) => set({ iceServers }),
@@ -273,8 +343,18 @@ export const usePeerStore = create<PeerState>()((set, get) => {
         return { mediaReconnecting }
       }),
 
-    clearPeers: () =>
-      set({ inRoom: false, peers: new Map(), remoteStreams: new Map(), mediaReconnecting: new Set(), iceServers: [] }),
+    setStats: (localStats, stats) =>
+      set((state) => ({ localStats, peerStats: new Map([...stats].filter(([id]) => state.peers.has(id))) })),
+
+    recordFlowEvent: (event) =>
+      set((state) => ({
+        mediaFlowEvents: [{ ...event, id: (state.mediaFlowEvents[0]?.id ?? 0) + 1, at: Date.now() }, ...state.mediaFlowEvents].slice(
+          0,
+          MAX_FLOW_EVENTS,
+        ),
+      })),
+
+    clearPeers: () => set({ inRoom: false, ...EMPTY_ROOM }),
 
     enableMic: async () => {
       const generation = ++audioGeneration
@@ -430,10 +510,7 @@ export const usePeerStore = create<PeerState>()((set, get) => {
       get().screenTrack?.stop()
       set({
         inRoom: false,
-        peers: new Map(),
-        remoteStreams: new Map(),
-        mediaReconnecting: new Set(),
-        iceServers: [],
+        ...EMPTY_ROOM,
         localStream: null,
         screenTrack: null,
         sfuSession: null,

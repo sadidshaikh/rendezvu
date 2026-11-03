@@ -21,6 +21,7 @@ export type MsgType =
   | 'peer-state'
   | 'sync'
   | 'room-snapshot'
+  | 'stats-report'
 
 /**
  * Every WebSocket message, in both directions, is one JSON envelope.
@@ -181,4 +182,36 @@ export interface IceServersRequest {
 /** Response of `POST /ice-servers`. TURN credentials in it expire after an hour. */
 export interface IceServersResponse {
   iceServers: IceServer[]
+}
+
+// ─── Connection quality (Phase 10) ─────────────────────────────────────────
+
+export type QualityGrade = 'good' | 'medium' | 'poor' | 'unknown'
+export type NetworkPressure = 'low' | 'medium' | 'high' | 'severe' | 'unknown'
+/** host or srflx: a direct path. relay: through TURN. */
+export type CandidateType = 'host' | 'srflx' | 'relay' | 'unknown'
+
+/** How one browser sees its connection to one other person. */
+export interface StatsReportPeer {
+  /** The other person. */
+  peerId: string
+  quality: QualityGrade
+  networkPressure: NetworkPressure
+  /** -1 until measured. */
+  roundTripTimeMs: number
+  packetLossPercent: number
+  jitterMs: number
+  /** Our uplink: one stream to the SFU, the same in every entry. */
+  outboundBitrateKbps: number
+  /** What we receive from this person. */
+  inboundBitrateKbps: number
+  candidateType: CandidateType
+  frameWidth?: number
+  frameHeight?: number
+  framesPerSecond?: number
+}
+
+/** client → server, every 10 s while in a call with others. */
+export interface StatsReportData {
+  peers: StatsReportPeer[]
 }

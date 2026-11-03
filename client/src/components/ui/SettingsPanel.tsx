@@ -2,14 +2,17 @@ import { useEffect, useRef } from 'react'
 import { X } from 'lucide-react'
 import { useMediaDevices } from '@/hooks/use-media-devices'
 import { usePeerStore } from '@/stores/peer'
+import { ConnectionDiagnostics } from './ConnectionDiagnostics'
 import { DevicePickers, hasAnyDevice } from './DevicePickers'
 
 interface SettingsPanelProps {
   onClose: () => void
+  /** In a call: adds the Connection section. The lobby has no connections to show. */
+  inCall?: boolean
 }
 
-/** Side panel for call settings. Background effects (Phase 12) and connection details (Phase 10) join Devices later. */
-export function SettingsPanel({ onClose }: SettingsPanelProps) {
+/** Side panel for call settings: devices, and in a call the connection details. Background effects join in Phase 12. */
+export function SettingsPanel({ onClose, inCall = false }: SettingsPanelProps) {
   const panelRef = useRef<HTMLElement>(null)
   const closeRef = useRef(onClose)
   closeRef.current = onClose
@@ -59,6 +62,12 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
             </p>
           )}
         </section>
+        {inCall && (
+          <section className="flex flex-col gap-3">
+            <h2 className="text-xs font-semibold tracking-widest text-muted-foreground uppercase">Connection</h2>
+            <ConnectionDiagnostics />
+          </section>
+        )}
       </div>
     </aside>
   )

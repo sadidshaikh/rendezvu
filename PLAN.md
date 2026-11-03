@@ -63,7 +63,7 @@ You'll build every piece of this. Each step names the phase that builds it.
 5. **Publish** (Phase 4). The browser creates a Cloudflare session through Node, sends an SDP offer for its camera and mic, applies the answer, and connects to the SFU. Then it tells Node `sfu-announce {sessionId, tracks}`.
 6. **Tell the room** (Phase 5). Node stores your track list and sends `sfu-tracks` to everyone else. It also replays the list to anyone who joins later.
 7. **Subscribe** (Phase 5). Every other browser asks Cloudflare (through Node) for your tracks. Cloudflare sends an offer, the browser answers, and your video appears.
-8. **During the call** (Phases 6–10). `peer-state` shares mute, camera and speaking status. Heartbeats, snapshots and repair keep the call alive. Video quality adapts to the network.
+8. **During the call** (Phases 6–10). `peer-state` shares mute, camera and speaking status. Heartbeats, snapshots and repair keep the call alive. Connection quality is measured and shown.
 9. **Leave** (Phase 1, finished in Phase 9). The browser sends `leave`, closes its SFU sessions and stops its devices. Node tells the room `peer-left`.
 
 ---
@@ -270,22 +270,20 @@ Cloudflare's JSON errors are forwarded unchanged so the client can read them. Ev
 
 ---
 
-### Phase 10: Adaptive video quality
+### Phase 10: Connection quality
 
 **Build (client):**
-- A sender quality ladder: **900 kbps / 24 fps → 500 kbps / 20 fps → 200 kbps / 15 fps**.
-  - Step down after 6 s of high latency or low bandwidth.
-  - Step back up one level after 20 s of healthy readings.
-- Audio-first: under severe pressure at the lowest level, pause your video (only if your mic is on). The others are told `videoHeld` and show your avatar instead of a frozen image.
-- A quality dot for each person, and a diagnostics panel: RTT, packet loss, jitter, bitrate, resolution, and candidate type (direct or relay).
+- Per-connection numbers from the Phase 9 stats loop: RTT, packet loss, jitter, bitrate, resolution, and candidate type (direct or relay).
+- A quality dot for each person (shown only when the connection is medium or poor), and a diagnostics panel in Settings with recent interruptions and a Copy report button.
+- Nothing changes what is sent. An automatic quality ladder (900 → 500 → 200 kbps, plus pausing video to protect audio) was built and removed: on the test machine Chrome's own bandwidth estimate stayed near 70 kbps, and the ladder switched off video on a working call. See `docs/10-connection-quality.md`.
 
-**Build (Node, you):** accept `stats-report` from browsers for monitoring.
+**Build (Node, you):** accept `stats-report` from browsers for monitoring: check it, keep the latest per pair in memory, and log problem reports.
 
-**Why now:** On weak connections, people would rather hear clearly than see blurry video that keeps freezing. This builds on the stats loop from Phase 9.
+**Why now:** This builds on the stats loop from Phase 9, and Phase 13 turns these reports into metrics.
 
-**You'll learn:** `RTCRtpSender.setParameters`, congestion signals, and hysteresis (wait before stepping down and longer before stepping up, so quality doesn't flip back and forth).
+**You'll learn:** what `getStats()` reports beyond byte counts, how to turn running totals into per-poll rates, and why changing live media on a single signal is riskier than showing it.
 
-**Done when:** throttling your network in DevTools lowers quality step by step, audio stays clear, and quality comes back after the throttle is removed.
+**Done when:** Settings → Connection shows plausible numbers for each person, a throttled connection turns that person's dot amber or red, and a normal call is unchanged (default sender encodings).
 
 ---
 
@@ -413,7 +411,6 @@ Built up phase by phase. Shared as TypeScript types between `client/` and `signa
 - [ ] WebSocket reconnect without dropping media; no duplicate people
 - [ ] Room snapshots and a reconciler; late joiners always see everyone
 - [ ] Media repair ladder, dead-track detection, grace periods, stale-result safety
-- [ ] Adaptive quality ladder with audio-first mode
 - [ ] Quality dots and a diagnostics panel
 - [ ] Guest knock and admit
 - [ ] Tokens on every call API; rate limits; origin checks
