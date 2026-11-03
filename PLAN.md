@@ -322,6 +322,8 @@ Cloudflare's JSON errors are forwarded unchanged so the client can read them. Ev
 
 ### Phase 13: Observability
 
+> ⏸ **Deferred.** Skipped for now at your request; it comes back after Phase 14. Until then, the server's structured log lines (`stats_report`, `knock`, `sfu_*`, `ws_*`) and the browser console (`[repair]`, `[stats]`, `[effects]`) are the monitoring, and the Phase 10 quality store keeps collecting reports for this phase to serve.
+
 **Build (Node, you):**
 - Prometheus metrics: active rooms and peers, WebSocket reconnects, SFU request durations and errors by route, and TURN fetch failures.
 - Accept `client-metric` from browsers: time to first media (TTFM), setup phases (ICE gathering, publish connected, subscribe connected, first frame), call attempts (success, timeout, error), repair attempts and recoveries.
@@ -415,7 +417,7 @@ Built up phase by phase. Shared as TypeScript types between `client/` and `signa
 - [ ] Guest knock and admit
 - [ ] Tokens on every call API; rate limits; origin checks
 - [ ] Background blur and effects, noise suppression
-- [ ] Metrics, error tracking, dashboards
+- [ ] Metrics, error tracking, dashboards (Phase 13, deferred until after Phase 14)
 - [ ] Deployed and tested on real devices and networks
 
 ## 7. How we work

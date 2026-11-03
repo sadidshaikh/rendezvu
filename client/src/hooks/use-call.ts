@@ -19,6 +19,7 @@ import type {
 import { playJoinCall, playKnock, playPeerJoined, playPeerLeft, playScreenShareStart, playScreenShareStop } from '@/lib/sounds'
 import { fetchIceServers, startIceServerKeepalive } from '@/services/api/ice'
 import { getRoomToken, saveGuestToken } from '@/services/api/room-token'
+import { markJoinStarted, markPeerArrived } from '@/lib/ttfm'
 import type { SignalingClient } from '@/services/signaling/client'
 import { CallReconciler } from '@/services/webrtc/call-reconciler'
 import { SfuSession, type RepairInfo } from '@/services/webrtc/sfu-session'
@@ -321,6 +322,7 @@ export function useCall({ client, roomId, enabled, userName, initialAudio, initi
         screenSharing: d.screenSharing,
       })
       playPeerJoined()
+      markPeerArrived()
     }
     const handlePeerState = (env: { from?: string; data?: PeerStateData }) => {
       if (!env.from || !env.data) return
@@ -365,6 +367,8 @@ export function useCall({ client, roomId, enabled, userName, initialAudio, initi
     const handleKnockGranted = (env: { data?: KnockGrantedData }) => {
       if (env.data?.token) saveGuestToken(roomId, env.data.token)
       playJoinCall()
+      // Waiting to be let in isn't connection time.
+      markJoinStarted()
     }
     const handleKnockDenied = () => store().setAdmission('denied')
     // Members only: someone is waiting, or stopped waiting.

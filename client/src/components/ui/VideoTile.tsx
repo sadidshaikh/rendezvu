@@ -3,6 +3,7 @@ import { Loader2, Mic, MicOff, Pin, PinOff } from 'lucide-react'
 import { Avatar } from '@/components/ui/Avatar'
 import { StreamVideo } from '@/components/ui/StreamVideo'
 import { initialsOf } from '@/lib/avatar'
+import { markFirstRemoteFrame } from '@/lib/ttfm'
 import { cn } from '@/lib/utils'
 import type { QualityGrade } from '@rendezvu/protocol'
 import { QUALITY_LABEL, QualityDot } from './QualityDot'
@@ -122,7 +123,10 @@ export function VideoTile({
         <StreamVideo
           stream={stream}
           fit={screenSharing ? 'contain' : 'adaptive'}
-          onPlaying={() => setPlayingStream(stream)}
+          onPlaying={() => {
+            setPlayingStream(stream)
+            if (!isLocal) markFirstRemoteFrame()
+          }}
           visible={showingVideo}
           className={screenSharing ? 'bg-black' : undefined}
         />

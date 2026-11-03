@@ -1,6 +1,6 @@
 import { createReadStream, existsSync, readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
-import { defineConfig, type Plugin } from 'vite'
+import { defineConfig, loadEnv, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
@@ -39,14 +39,81 @@ function mediapipeWasm(): Plugin {
   }
 }
 
-export default defineConfig({
-  plugins: [react(), tailwindcss(), mediapipeWasm()],
-  resolve: {
-    alias: { '@': path.resolve(import.meta.dirname, 'src') },
-  },
-  server: {
-    port: 3000,
-    host: true,
-    https,
-  },
+/**
+ * Security headers for the whole site, with the signaling server's origin in
+ * connect-src. Written to dist/_headers for Cloudflare Pages, and sent by
+ * `vite preview` too, so the policy can be tested locally before deploying.
+ */
+function securityHeaders(serverDomain: string | undefined): Record<string, string> {
+  const connect = serverDomain ? `https://${serverDomain} wss://${serverDomain}` : 'https: wss:'
+  const csp = [
+    "default-src 'self'",
+    // WebAssembly (MediaPipe, RNNoise) without allowing JavaScript eval.
+    "script-src 'self' 'wasm-unsafe-eval'",
+    // The Phase 12 worker clock is a blob: worker.
+    "worker-src 'self' blob:",
+    `connect-src 'self' ${connect}`,
+    // A background picture is a blob: URL.
+    "img-src 'self' blob: data:",
+    // React's style={…} attributes need inline styles.
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    'font-src https://fonts.gstatic.com',
+    "media-src 'self' blob:",
+    "frame-ancestors 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+  ].join('; ')
+  return {
+    'Content-Security-Policy': csp,
+    'Permissions-Policy': 'camera=(self), microphone=(self), display-capture=(self)',
+    'Referrer-Policy': 'strict-origin-when-cross-origin',
+    'X-Content-Type-Options': 'nosniff',
+  }
+}
+
+function pagesHeaders(serverDomain: string | undefined): Plugin {
+  return {
+    name: 'rendezvu-pages-headers',
+    apply: 'build',
+    generateBundle() {
+      if (!serverDomain) this.warn('VITE_SERVER_DOMAIN is not set: the CSP allows any https:/wss: server')
+      const site = Object.entries(securityHeaders(serverDomain)).map(([k, v]) => `  ${k}: ${v}`)
+      const source = [
+        '/*',
+        ...site,
+        // Content-hashed names: a new build means new names, so cache for good.
+        '/assets/*',
+        '  Cache-Control: public, max-age=31536000, immutable',
+        // Fixed names: cached a day, then revalidated.
+        '/mediapipe/*',
+        '  Cache-Control: public, max-age=86400',
+        '/models/*',
+        '  Cache-Control: public, max-age=86400',
+        '',
+      ].join('\n')
+      this.emitFile({ type: 'asset', fileName: '_headers', source })
+    },
+  }
+}
+
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, import.meta.dirname, 'VITE_')
+  return {
+    plugins: [react(), tailwindcss(), mediapipeWasm(), pagesHeaders(env.VITE_SERVER_DOMAIN)],
+    resolve: {
+      alias: { '@': path.resolve(import.meta.dirname, 'src') },
+    },
+    server: {
+      port: 3000,
+      host: true,
+      https,
+    },
+    // The production headers, to test the CSP against a local build.
+    preview: {
+      port: 4173,
+      host: true,
+      https,
+      headers: securityHeaders(env.VITE_SERVER_DOMAIN),
+    },
+  }
 })

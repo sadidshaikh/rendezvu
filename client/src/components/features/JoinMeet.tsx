@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { CalendarOff, Clock, Loader2, Settings } from 'lucide-react'
 import { Avatar } from '@/components/ui/Avatar'
+import { Link } from 'react-router'
 import { Button } from '@/components/ui/button'
 import { CameraButton } from '@/components/ui/CameraButton'
 import { Collapsible } from '@/components/ui/Collapsible'
@@ -18,6 +19,7 @@ import { useAudioLevel } from '@/hooks/use-audio-level'
 import { useMediaDevices } from '@/hooks/use-media-devices'
 import { resumeSharedAudioContext } from '@/lib/audio-context'
 import { playJoinCall } from '@/lib/sounds'
+import { markJoinStarted } from '@/lib/ttfm'
 import { describeMediaError } from '@/lib/media-errors'
 import { meetCodePattern } from '@/lib/room-routes'
 import { cn } from '@/lib/utils'
@@ -40,6 +42,8 @@ export default function JoinMeet({ meetCode, roomError, onJoin }: JoinMeetProps)
   const [hasToken] = useState(() => getRoomToken(meetCode) !== null)
   const [roomStatus, setRoomStatus] = useState<LobbyRoomStatus | null>(null)
   const [statusChecked, setStatusChecked] = useState(false)
+  // Bumped by "Try again" after the server couldn't be reached.
+  const [statusAttempt, setStatusAttempt] = useState(0)
   const [deviceError, setDeviceError] = useState<string | null>(null)
   const [showSettings, setShowSettings] = useState(false)
   // A device is opening (the permission prompt may be up). Its button waits.
@@ -75,7 +79,7 @@ export default function JoinMeet({ meetCode, roomError, onJoin }: JoinMeetProps)
     return () => {
       cancelled = true
     }
-  }, [canJoinMeet, meetCode])
+  }, [canJoinMeet, meetCode, statusAttempt])
 
   // Intent flips only once the device is really running, so the button never
   // says "on" with nothing behind it.
@@ -117,8 +121,11 @@ export default function JoinMeet({ meetCode, roomError, onJoin }: JoinMeetProps)
     if (!joinName || !canJoinMeet) return
     // Inside the click, so iOS lets the shared AudioContext run.
     resumeSharedAudioContext()
-    // A guest hears it on being let in instead.
-    if (hasToken) playJoinCall()
+    // A guest hears it on being let in instead, and its clock starts there.
+    if (hasToken) {
+      playJoinCall()
+      markJoinStarted()
+    }
     onJoin(joinName)
   }
 
@@ -127,7 +134,7 @@ export default function JoinMeet({ meetCode, roomError, onJoin }: JoinMeetProps)
     ? { title: 'This room is not available', body: 'Check the meeting link or ask the host for a new one.' }
     : roomError
       ? { title: 'This room is not available', body: roomError }
-      : roomStatus && roomStatus.status !== 'open' && roomStatus.status !== 'unavailable'
+      : roomStatus && roomStatus.status !== 'open' && roomStatus.status !== 'unavailable' && roomStatus.status !== 'unreachable'
         ? statusCopy(roomStatus)
         : null
 
@@ -229,6 +236,14 @@ export default function JoinMeet({ meetCode, roomError, onJoin }: JoinMeetProps)
                 <RoomStatusCard {...blocked} />
               ) : (
                 <div className="mt-4 flex flex-col gap-3">
+                  {roomStatus?.status === 'unreachable' && (
+                    <div role="alert" className="flex items-center justify-between gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-sm">
+                      <span>Can’t reach the Rendezvu server right now. Try again in a minute.</span>
+                      <Button variant="outline" size="sm" onClick={() => setStatusAttempt((n) => n + 1)}>
+                        Try again
+                      </Button>
+                    </div>
+                  )}
                   <label htmlFor="join-name" className="sr-only">
                     Your name
                   </label>
@@ -247,7 +262,10 @@ export default function JoinMeet({ meetCode, roomError, onJoin }: JoinMeetProps)
                   <p className="text-center text-xs text-muted-foreground">
                     {hasToken
                       ? 'Check your camera and microphone before joining.'
-                      : 'Someone in the call will need to let you in.'}
+                      : 'Someone in the call will need to let you in.'}{' '}
+                    <Link to="/privacy" className="underline underline-offset-2 hover:text-foreground">
+                      Video and privacy
+                    </Link>
                   </p>
                 </div>
               )}

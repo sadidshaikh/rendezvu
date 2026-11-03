@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { useNavigate } from 'react-router'
+import { Link, useNavigate } from 'react-router'
 import { Keyboard, Video } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -78,6 +78,9 @@ export default function HomePage() {
           <Video className="size-5 shrink-0 text-primary" />
           <span>Booking pages are coming next. Every booking will get its own private room.</span>
         </div>
+        <Link to="/privacy" className="mt-4 inline-block text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground">
+          Video and privacy
+        </Link>
       </main>
     </div>
   )
