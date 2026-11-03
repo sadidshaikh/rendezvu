@@ -54,6 +54,11 @@ export class Hub {
     this.snapshotTimer = null
   }
 
+  /** Whether this connection is a member of this room right now. */
+  isPeerInRoom(peerId: string, roomId: string): boolean {
+    return this.rooms.get(roomId)?.has(peerId) ?? false
+  }
+
   /** Whether some connection from this browser tab is in this room right now. */
   isPresenceInRoom(presenceId: string, roomId: string): boolean {
     return this.rooms.get(roomId)?.findByPresence(presenceId) !== undefined

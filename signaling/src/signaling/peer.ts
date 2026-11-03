@@ -27,6 +27,8 @@ export class Peer {
   audio = false
   video = false
   screenSharing = false
+  /** When this connection's last stats-report was accepted. */
+  lastStatsReportAt = 0
 
   private readonly queue: string[] = []
   // Critical messages waiting for room in a full queue, oldest first. Each one

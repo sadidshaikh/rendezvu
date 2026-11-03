@@ -5,6 +5,7 @@ import { createMeetHandler, roomStatusHandler } from './meets/routes.ts'
 import { createServer } from './server.ts'
 import { CloudflareSfuClient } from './sfu/cloudflare-sfu.ts'
 import { sfuHandler } from './sfu/routes.ts'
+import { QualityStore } from './quality/quality-store.ts'
 import { SfuSessionRegistry } from './sfu/session-registry.ts'
 import { Hub } from './signaling/hub.ts'
 import { attachSignaling } from './signaling/ws-handler.ts'
@@ -21,12 +22,15 @@ const config = loadConfig()
 
 const registry = new InstantRoomRegistry(config.instantRoomTtlMs, config.instantRoomEmptyGraceMs)
 const sfuSessions = new SfuSessionRegistry()
+const quality = new QualityStore()
 const logDropped = (presenceId: string, sessions: number, reason: 'leave' | 'timeout') => {
   if (sessions > 0) log('sfu_sessions_dropped', { presence: presenceId.slice(0, 8), sessions, reason })
 }
 const hub = new Hub({
   onRoomEmpty: (roomId) => registry.markEmpty(roomId),
   onPeerLeave: (peer, reason) => {
+    // Whatever the reason, its connection numbers no longer describe anyone's call.
+    quality.removePeer(peer.id)
     // A tab that said goodbye gets nothing back. One that vanished may be
     // reconnecting, and its media to Cloudflare is still flowing meanwhile.
     if (reason === 'leave') logDropped(peer.presenceId, sfuSessions.removePresence(peer.presenceId), 'leave')
@@ -57,7 +61,7 @@ const server = createServer(config, {
   '/ice-servers': iceServersHandler(registry, turnClient, config.allowedOrigins),
   '/sfu/sessions/': sfuHandler({ sessions: sfuSessions, hub, rooms: registry, sfuClient, allowedOrigins: config.allowedOrigins }),
 })
-const signaling = attachSignaling(server, { hub, registry, sfuSessions, allowedOrigins: config.allowedOrigins })
+const signaling = attachSignaling(server, { hub, registry, sfuSessions, quality, allowedOrigins: config.allowedOrigins })
 
 setInterval(() => {
   const removed = registry.prune()

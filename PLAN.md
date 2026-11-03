@@ -283,7 +283,7 @@ Cloudflare's JSON errors are forwarded unchanged so the client can read them. Ev
 
 **You'll learn:** what `getStats()` reports beyond byte counts, how to turn running totals into per-poll rates, and why changing live media on a single signal is riskier than showing it.
 
-**Done when:** Settings → Connection shows plausible numbers for each person, a throttled connection turns that person's dot amber or red, and a normal call is unchanged (default sender encodings).
+**Done when:** Settings → Connection shows plausible numbers for each person, a throttled connection turns that person's dot amber or red, and a normal call is unchanged (default sender encodings). ✅ Built; the server side was tested with raw sockets (see `docs/10-connection-quality.md`). The throttled-device check waits for your run.
 
 ---
 
