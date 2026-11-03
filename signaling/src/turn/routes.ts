@@ -7,8 +7,7 @@ import { BodyTooLargeError, readJson } from '../http/read-json.ts'
 import { catchAsync, sendError, sendJson, sendText } from '../http/respond.ts'
 import { isObject } from '../json.ts'
 import { errorMessage, log } from '../log.ts'
-import type { InstantRoomRegistry } from '../meets/instant-rooms.ts'
-import { requireActiveRoom } from '../meets/room-access.ts'
+import { sendRefusal, type RoomAccess } from '../access/room-access.ts'
 import type { CloudflareTurnClient } from './cloudflare-turn.ts'
 
 type Handler = (req: IncomingMessage, res: ServerResponse) => void
@@ -26,7 +25,7 @@ const STUN_FALLBACK: IceServer[] = [{ urls: ['stun:stun.l.google.com:19302'] }]
  * gets the STUN fallback.
  */
 export function iceServersHandler(
-  registry: InstantRoomRegistry,
+  access: RoomAccess,
   turnClient: CloudflareTurnClient | null,
   allowedOrigins: string[],
 ): Handler {
@@ -37,14 +36,14 @@ export function iceServersHandler(
       sendText(res, 405, 'method not allowed')
       return
     }
-    catchAsync(res, '/ice-servers', handle(req, res, registry, turnClient))
+    catchAsync(res, '/ice-servers', handle(req, res, access, turnClient))
   }
 }
 
 async function handle(
   req: IncomingMessage,
   res: ServerResponse,
-  registry: InstantRoomRegistry,
+  access: RoomAccess,
   turnClient: CloudflareTurnClient | null,
 ): Promise<void> {
   let body: unknown
@@ -63,9 +62,13 @@ async function handle(
     return
   }
 
-  // Only a room someone has joined. Stops anyone farming TURN credentials
-  // (billed to us) from codes that were created but never used.
-  if (!requireActiveRoom(res, registry, roomId)) return
+  // A token for this room, and a room someone has joined. Stops anyone
+  // farming TURN credentials (billed to us) from a meeting code alone.
+  const decision = access.authorizeRequest(req, roomId, readPresenceId(body))
+  if (!decision.ok) {
+    sendRefusal(res, '/ice-servers', decision)
+    return
+  }
 
   const iceServers = turnClient ? await fromCloudflare(turnClient, roomId, res) : STUN_FALLBACK
   if (!iceServers) return // the client left; nobody to answer
@@ -101,6 +104,11 @@ async function fromCloudflare(
   } finally {
     clientGone.release()
   }
+}
+
+function readPresenceId(body: unknown): string | undefined {
+  const presenceId = isObject(body) ? body.presenceId : undefined
+  return typeof presenceId === 'string' && presenceId.length <= 64 ? presenceId : undefined
 }
 
 function readRoomId(body: unknown): string | null {

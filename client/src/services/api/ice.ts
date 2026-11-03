@@ -1,6 +1,7 @@
 import type { IceServer, IceServersRequest, IceServersResponse } from '@rendezvu/protocol'
 import { httpServerUri } from '@/lib/config'
 import { parseApiError } from './http'
+import { getOrCreatePresenceId } from '@/services/signaling/client'
 import { authHeaders } from './room-token'
 
 const FETCH_TIMEOUT_MS = 5_000
@@ -21,7 +22,8 @@ export async function fetchIceServers(roomId: string): Promise<IceServer[]> {
       await new Promise((r) => setTimeout(r, base * (0.5 + Math.random() * 0.5)))
     }
     try {
-      const body: IceServersRequest = { roomId }
+      // With the tab's presence: a guest token is only good for the tab it was issued to.
+      const body: IceServersRequest = { roomId, presenceId: getOrCreatePresenceId() }
       const res = await fetch(`${httpServerUri}/ice-servers`, {
         method: 'POST',
         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),

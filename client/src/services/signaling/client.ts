@@ -21,7 +21,11 @@ const PRESENCE_ID_KEY = 'rendezvu.presenceId'
  * One id per browser tab, kept across reconnects in sessionStorage. Per tab,
  * not per browser, so two tabs in one room are still two people.
  */
-function getOrCreatePresenceId(): string {
+// With storage blocked: one id for the page's lifetime, so signaling and
+// HTTP calls (a guest token is bound to it) still agree.
+let memoryPresenceId: string | null = null
+
+export function getOrCreatePresenceId(): string {
   try {
     const existing = sessionStorage.getItem(PRESENCE_ID_KEY)
     if (existing) return existing
@@ -30,7 +34,8 @@ function getOrCreatePresenceId(): string {
     return id
   } catch {
     // Storage blocked: still unique, just not kept across a page reload.
-    return crypto.randomUUID()
+    memoryPresenceId ??= crypto.randomUUID()
+    return memoryPresenceId
   }
 }
 

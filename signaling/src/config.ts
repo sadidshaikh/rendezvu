@@ -1,3 +1,5 @@
+import { randomBytes } from 'node:crypto'
+
 export interface Config {
   port: number
   host: string
@@ -6,6 +8,11 @@ export interface Config {
   tls: { certFile: string; keyFile: string } | null
   instantRoomTtlMs: number
   instantRoomEmptyGraceMs: number
+  /**
+   * Signs room tokens (Phase 11). Random per start when ROOM_TOKEN_SECRET is
+   * unset, which means tokens stop working on every restart.
+   */
+  roomTokenSecret: string
   cloudflare: {
     turnKeyId: string
     turnApiToken: string
@@ -28,6 +35,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     tls: certFile ? { certFile, keyFile } : null,
     instantRoomTtlMs: parseDuration('INSTANT_ROOM_TTL', env.INSTANT_ROOM_TTL || '12h'),
     instantRoomEmptyGraceMs: parseDuration('INSTANT_ROOM_EMPTY_GRACE', env.INSTANT_ROOM_EMPTY_GRACE || '30m'),
+    roomTokenSecret: readTokenSecret(env.ROOM_TOKEN_SECRET),
     cloudflare: {
       turnKeyId: env.CF_TURN_KEY_ID ?? '',
       turnApiToken: env.CF_TURN_API_TOKEN ?? '',
@@ -35,6 +43,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       callsAppToken: env.CF_CALLS_APP_TOKEN ?? '',
     },
   }
+}
+
+const MIN_SECRET_LENGTH = 32
+
+function readTokenSecret(value: string | undefined): string {
+  if (value && value.length >= MIN_SECRET_LENGTH) return value
+  if (value) throw new Error(`ROOM_TOKEN_SECRET must be at least ${MIN_SECRET_LENGTH} characters`)
+  console.warn('ROOM_TOKEN_SECRET not set; using a random one. Room tokens stop working when the server restarts.')
+  return randomBytes(32).toString('hex')
 }
 
 function parsePort(value: string): number {

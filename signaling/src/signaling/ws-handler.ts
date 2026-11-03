@@ -6,12 +6,16 @@ import type {
   Envelope,
   ErrorData,
   JoinData,
+  KnockAnswerData,
+  KnockGrantedData,
   PeerStateData,
   StatsReportPeer,
   SfuTrackInfo,
   SfuTracksData,
   SignalingErrorCode,
 } from '@rendezvu/protocol'
+import type { RoomAccess } from '../access/room-access.ts'
+import { clientIp } from '../http/client-ip.ts'
 import { isObject } from '../json.ts'
 import { log } from '../log.ts'
 import type { InstantRoomRegistry } from '../meets/instant-rooms.ts'
@@ -36,12 +40,21 @@ const MAX_SFU_ID_LENGTH = 256
 const STATS_REPORT_MIN_INTERVAL_MS = 5_000
 // Rooms hold far fewer people; a longer list is junk.
 const MAX_STATS_REPORT_PEERS = 16
+// A real client sends a handful of messages a second at most. A burst of 60,
+// refilling at 30 a second, never touches it and stops a flood.
+const WS_MESSAGE_BURST = 60
+const WS_MESSAGES_PER_SECOND = 30
+// One office behind a NAT is a few dozen tabs at most; a script opening
+// sockets in a loop is not.
+const MAX_SOCKETS_PER_IP = 20
+const MAX_TOKEN_LENGTH = 2048
 
 interface Deps {
   hub: Hub
   registry: InstantRoomRegistry
   sfuSessions: SfuSessionRegistry
   quality: QualityStore
+  access: RoomAccess
   allowedOrigins: string[]
 }
 
@@ -53,6 +66,9 @@ export interface Signaling {
 export function attachSignaling(server: Server, deps: Deps): Signaling {
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES })
   const allowedHosts = new Set(deps.allowedOrigins.map(hostOf).filter((h): h is string => h !== null))
+  const socketsPerIp = new Map<string, number>()
+  // One log line per address every 10 s: a flood of refused sockets must not flood the log too.
+  const refusedLoggedAt = new Map<string, number>()
 
   server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     const path = new URL(req.url ?? '/', 'http://localhost').pathname
@@ -66,7 +82,26 @@ export function attachSignaling(server: Server, deps: Deps): Signaling {
       rejectUpgrade(socket, 403, 'Forbidden')
       return
     }
-    wss.handleUpgrade(req, socket, head, (ws) => handleConnection(ws, deps))
+    const ip = clientIp(req)
+    const open = socketsPerIp.get(ip) ?? 0
+    if (open >= MAX_SOCKETS_PER_IP) {
+      const now = Date.now()
+      if (now - (refusedLoggedAt.get(ip) ?? 0) > 10_000) {
+        refusedLoggedAt.set(ip, now)
+        log('ws_too_many_sockets', { ip })
+      }
+      rejectUpgrade(socket, 429, 'Too Many Requests')
+      return
+    }
+    socketsPerIp.set(ip, open + 1)
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      ws.once('close', () => {
+        const left = (socketsPerIp.get(ip) ?? 1) - 1
+        if (left > 0) socketsPerIp.set(ip, left)
+        else socketsPerIp.delete(ip)
+      })
+      handleConnection(ws, deps)
+    })
   })
 
   return {
@@ -88,7 +123,28 @@ function handleConnection(ws: WebSocket, deps: Deps): void {
     idleTimer = setTimeout(() => ws.terminate(), READ_IDLE_TIMEOUT_MS)
   }
 
+  // Token bucket: refills continuously, one message per token.
+  let tokens = WS_MESSAGE_BURST
+  let refilledAt = Date.now()
+  const takeToken = () => {
+    const now = Date.now()
+    tokens = Math.min(WS_MESSAGE_BURST, tokens + ((now - refilledAt) / 1000) * WS_MESSAGES_PER_SECOND)
+    refilledAt = now
+    if (tokens < 1) return false
+    tokens -= 1
+    return true
+  }
+
+  // Messages already queued keep arriving while the close goes out; they're dropped unlogged.
+  let limited = false
   ws.on('message', (raw: RawData) => {
+    if (limited) return
+    if (!takeToken()) {
+      limited = true
+      log('ws_rate_limited', { peer: peer.id })
+      ws.close(1008, 'too many messages')
+      return
+    }
     resetIdle()
     const env = parseEnvelope(raw)
     if (!env) {
@@ -101,16 +157,22 @@ function handleConnection(ws: WebSocket, deps: Deps): void {
   ws.on('close', () => {
     clearTimeout(idleTimer)
     hub.leave(peer, 'disconnect')
+    hub.leaveWaiting(peer)
     log('ws_disconnect', { peer: peer.id })
   })
 
   ws.on('error', (err) => log('ws_error', { peer: peer.id, error: err.message }))
 }
 
-function handleMessage(peer: Peer, env: Envelope, { hub, registry, sfuSessions, quality }: Deps): void {
+function handleMessage(peer: Peer, env: Envelope, deps: Deps): void {
+  const { hub, sfuSessions, quality } = deps
   switch (env.type) {
     case 'join':
-      handleJoin(peer, env, hub, registry)
+      handleJoin(peer, env, deps)
+      return
+    case 'knock-admit':
+    case 'knock-deny':
+      handleKnockAnswer(peer, env, deps)
       return
     case 'sfu-announce':
       handleSfuAnnounce(peer, env, hub, sfuSessions)
@@ -121,6 +183,7 @@ function handleMessage(peer: Peer, env: Envelope, { hub, registry, sfuSessions, 
       return
     case 'leave':
       hub.leave(peer, 'leave')
+      hub.leaveWaiting(peer)
       return
     case 'sync':
       // Not in a room: same as peer-state, a race with leave, not an error.
@@ -137,7 +200,11 @@ function handleMessage(peer: Peer, env: Envelope, { hub, registry, sfuSessions, 
   }
 }
 
-function handleJoin(peer: Peer, env: Envelope, hub: Hub, registry: InstantRoomRegistry): void {
+/**
+ * The token decides: a valid one for this room makes a member, anything
+ * else is a knock. A client's own say-so (a flag, the page it's on) never does.
+ */
+function handleJoin(peer: Peer, env: Envelope, { hub, registry, access }: Deps): void {
   if (!env.room) {
     sendError(peer, 'join requires room')
     return
@@ -147,31 +214,72 @@ function handleJoin(peer: Peer, env: Envelope, hub: Hub, registry: InstantRoomRe
     return
   }
 
-  const access = registry.activateOrAllow(env.room)
-  if (access === 'expired') {
-    sendError(peer, 'This meeting is no longer active.', 'ROOM_EXPIRED')
-    return
-  }
-  if (access !== 'ok') {
-    sendError(peer, 'This meeting is not available right now.', 'ROOM_UNAVAILABLE')
-    return
-  }
-
   const data = readJoinData(env.data)
-  hub.join(peer, env.room, { ...data, presenceId: data.presenceId ?? peer.id })
+  const presenceId = data.presenceId ?? peer.id
+  const decision = access.authorizeJoin(env.room, data.token, presenceId)
+  if (decision.kind === 'refused') {
+    sendError(peer, decision.message, decision.code)
+    return
+  }
+  if (decision.kind === 'knock') {
+    const result = hub.knock(peer, env.room, { ...data, presenceId })
+    if (result === 'queue-full') sendError(peer, 'Too many people are waiting to join.', 'KNOCK_QUEUE_FULL')
+    return
+  }
+  joinAsMember(peer, env.room, { ...data, presenceId }, hub, registry)
+}
+
+/** Into the room: what a token holder gets at once, and an admitted guest after its knock-granted. */
+function joinAsMember(peer: Peer, roomId: string, data: JoinData & { presenceId: string }, hub: Hub, registry: InstantRoomRegistry): void {
+  // A member's join is what starts the room's clock.
+  const state = registry.activateOrAllow(roomId)
+  if (state !== 'ok') {
+    if (state === 'expired') sendError(peer, 'This meeting is no longer active.', 'ROOM_EXPIRED')
+    else sendError(peer, 'This meeting is not available right now.', 'ROOM_UNAVAILABLE')
+    return
+  }
+  hub.join(peer, roomId, data)
   // join() leaves the peer's previous room first. Rejoining a room you were
   // alone in empties it for a moment, which would start the empty-grace
   // countdown on a room that is in use.
-  registry.markActive(env.room)
+  registry.markActive(roomId)
   log('ws_join', {
     peer: peer.id,
     // Enough to follow one tab across reconnects without logging a usable id.
     presence: peer.presenceId.slice(0, 8),
-    room: env.room,
+    room: roomId,
     name: data.name,
     audio: data.audio,
     video: data.video,
   })
+}
+
+/**
+ * A member answered a knock. Ignored unless the sender is a member of a room
+ * where that guest is waiting, so a guest can't let another guest in.
+ */
+function handleKnockAnswer(peer: Peer, env: Envelope, { hub, registry, access }: Deps): void {
+  const d: Partial<KnockAnswerData> = isObject(env.data) ? env.data : {}
+  const guestId = typeof d.peerId === 'string' ? d.peerId : ''
+  const roomId = peer.roomId
+  if (!guestId || !roomId) return
+  const admitted = env.type === 'knock-admit'
+  const guest = hub.answerKnock(peer, guestId, admitted)
+  if (!guest) return
+  if (!admitted) {
+    guest.send({ type: 'knock-denied', room: roomId })
+    return
+  }
+  // Token first, so every request the guest makes from `joined` on can carry it.
+  const token = access.issueGuestToken(roomId, guest.presenceId)
+  guest.send({ type: 'knock-granted', room: roomId, data: { token } satisfies KnockGrantedData })
+  joinAsMember(
+    guest,
+    roomId,
+    { name: guest.name, audio: guest.audio, video: guest.video, presenceId: guest.presenceId },
+    hub,
+    registry,
+  )
 }
 
 /**
@@ -336,6 +444,7 @@ function readJoinData(data: unknown): JoinData {
     video: d.video === true,
   }
   if (typeof d.presenceId === 'string' && PRESENCE_ID.test(d.presenceId)) join.presenceId = d.presenceId
+  if (typeof d.token === 'string' && d.token.length <= MAX_TOKEN_LENGTH) join.token = d.token
   return join
 }
 

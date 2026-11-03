@@ -1,3 +1,4 @@
+import { RoomAccess } from './access/room-access.ts'
 import { loadConfig } from './config.ts'
 import { log } from './log.ts'
 import { InstantRoomRegistry } from './meets/instant-rooms.ts'
@@ -21,6 +22,7 @@ const SFU_SESSION_GRACE_MS = 2 * 60_000
 const config = loadConfig()
 
 const registry = new InstantRoomRegistry(config.instantRoomTtlMs, config.instantRoomEmptyGraceMs)
+const access = new RoomAccess(registry, config.roomTokenSecret, config.instantRoomTtlMs)
 const sfuSessions = new SfuSessionRegistry()
 const quality = new QualityStore()
 const logDropped = (presenceId: string, sessions: number, reason: 'leave' | 'timeout') => {
@@ -56,12 +58,12 @@ const sfuClient = callsAppId && callsAppToken ? new CloudflareSfuClient(callsApp
 if (!sfuClient) console.warn('CF_CALLS_APP_ID / CF_CALLS_APP_TOKEN not set; /sfu/* will return 503')
 
 const server = createServer(config, {
-  '/meets/new': createMeetHandler(registry, config.allowedOrigins),
+  '/meets/new': createMeetHandler(registry, access, config.allowedOrigins),
   '/room/status': roomStatusHandler(registry, config.allowedOrigins),
-  '/ice-servers': iceServersHandler(registry, turnClient, config.allowedOrigins),
-  '/sfu/sessions/': sfuHandler({ sessions: sfuSessions, hub, rooms: registry, sfuClient, allowedOrigins: config.allowedOrigins }),
+  '/ice-servers': iceServersHandler(access, turnClient, config.allowedOrigins),
+  '/sfu/sessions/': sfuHandler({ sessions: sfuSessions, hub, rooms: registry, access, sfuClient, allowedOrigins: config.allowedOrigins }),
 })
-const signaling = attachSignaling(server, { hub, registry, sfuSessions, quality, allowedOrigins: config.allowedOrigins })
+const signaling = attachSignaling(server, { hub, registry, sfuSessions, quality, access, allowedOrigins: config.allowedOrigins })
 
 setInterval(() => {
   const removed = registry.prune()

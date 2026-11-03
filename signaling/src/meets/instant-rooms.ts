@@ -56,6 +56,21 @@ export class InstantRoomRegistry {
     return 'ok'
   }
 
+  /**
+   * For a knock: may this code be joined at all (created or active, not
+   * expired)? Read-only, so a guest waiting alone doesn't start the room.
+   */
+  peek(code: string, now = Date.now()): RoomAccess {
+    const room = this.rooms.get(code)
+    if (!room) return 'unknown'
+    if (room.closed) return 'expired'
+    if (this.expired(room, now)) {
+      room.closed = true
+      return 'expired'
+    }
+    return 'ok'
+  }
+
   /** For read-only checks (status, TURN, SFU). Never starts a room. */
   allowActive(code: string, now = Date.now()): RoomAccess {
     const room = this.rooms.get(code)

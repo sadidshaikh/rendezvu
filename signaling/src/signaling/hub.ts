@@ -1,6 +1,8 @@
 import type {
   JoinData,
   JoinedData,
+  KnockRequestData,
+  KnockResolvedData,
   PeerJoinedData,
   PeerLeftData,
   PeerStateData,
@@ -14,6 +16,12 @@ import { Room } from './room.ts'
 // How often a room with publishers gets the whole picture again. Fixes anything
 // a dropped best-effort message or a missed event left wrong, within 15 s.
 const SNAPSHOT_EVERY_MS = 15_000
+// Beyond this many guests waiting in one room, the next knock is refused.
+const MAX_WAITING = 20
+// A tab that was denied can ask again after this long; sooner, it's denied again.
+const DENIED_COOLDOWN_MS = 10_000
+
+export type KnockResult = 'waiting' | 'denied' | 'queue-full'
 
 /**
  * Why a peer left its room, which decides what happens to its SFU sessions:
@@ -37,6 +45,8 @@ export class Hub {
   private readonly rooms = new Map<string, Room>()
   private readonly events: HubEvents
   private snapshotTimer: ReturnType<typeof setInterval> | null = null
+  // `${roomId}|${presenceId}` → when that tab was last denied.
+  private readonly deniedAt = new Map<string, number>()
 
   constructor(events: HubEvents) {
     this.events = events
@@ -70,6 +80,8 @@ export class Hub {
     // see peer-left instead of a ghost. Rejoining a room is the same
     // operation: everyone sees a clean leave and join.
     this.leave(peer, peer.roomId === roomId ? 'rejoin' : 'leave')
+    // Waiting somewhere (or here, and now joining with a token): not any more.
+    this.leaveWaiting(peer)
 
     peer.presenceId = data.presenceId
     peer.name = data.name
@@ -121,6 +133,90 @@ export class Hub {
         screenSharing: peer.screenSharing,
       } satisfies PeerJoinedData,
     })
+    // The knock broadcast went out before this member was here.
+    for (const guest of room.waiting()) {
+      peer.send({ type: 'knock-request', room: roomId, from: guest.id, data: knockRequestOf(guest) })
+    }
+  }
+
+  /**
+   * A join without a valid token: the guest goes on the room's waiting list
+   * and every member is asked. The guest learns nothing about the room.
+   * Callers have already checked that the code may be joined.
+   */
+  knock(peer: Peer, roomId: string, data: JoinData & { presenceId: string }, now = Date.now()): KnockResult {
+    this.leave(peer, 'leave')
+    this.leaveWaiting(peer)
+    peer.presenceId = data.presenceId
+    peer.name = data.name
+    peer.audio = data.audio
+    peer.video = data.video
+    peer.screenSharing = false
+
+    for (const [key, at] of this.deniedAt) if (now - at >= DENIED_COOLDOWN_MS) this.deniedAt.delete(key)
+    const deniedKey = `${roomId}|${data.presenceId}`
+    const denied = this.deniedAt.get(deniedKey)
+    if (denied !== undefined && now - denied < DENIED_COOLDOWN_MS) {
+      peer.send({ type: 'knock-denied', room: roomId })
+      return 'denied'
+    }
+    this.deniedAt.delete(deniedKey)
+
+    let room = this.rooms.get(roomId)
+    if (!room) {
+      room = new Room(roomId)
+      this.rooms.set(roomId, room)
+    }
+    // The same tab knocking again on a new connection: one entry, not two.
+    const old = room.findWaitingByPresence(data.presenceId)
+    if (old) {
+      this.leaveWaiting(old)
+      old.socket.close(1000, 'replaced by reconnect')
+    }
+    if (room.waiting().length >= MAX_WAITING) {
+      if (room.isUnused()) this.rooms.delete(roomId)
+      return 'queue-full'
+    }
+
+    room.addWaiting(peer)
+    peer.waitingIn = roomId
+    log('knock', { room: roomId, peer: peer.id, presence: data.presenceId.slice(0, 8) })
+    peer.send({ type: 'knock-pending', room: roomId })
+    room.broadcast({ type: 'knock-request', room: roomId, from: peer.id, data: knockRequestOf(peer) })
+    return 'waiting'
+  }
+
+  /**
+   * A member answered a knock. Returns the guest, taken off the waiting list,
+   * or null if `member` isn't in a room where `guestId` is waiting. The
+   * caller admits the guest (token, then join) or tells it no.
+   */
+  answerKnock(member: Peer, guestId: string, admitted: boolean, now = Date.now()): Peer | null {
+    const roomId = member.roomId
+    const room = roomId ? this.rooms.get(roomId) : undefined
+    const guest = room?.getWaiting(guestId)
+    if (!roomId || !room || !guest) return null
+    room.removeWaiting(guest.id)
+    guest.waitingIn = null
+    if (!admitted) this.deniedAt.set(`${roomId}|${guest.presenceId}`, now)
+    log(admitted ? 'knock_admitted' : 'knock_denied', { room: roomId, guest: guest.id, by: member.id })
+    this.resolveKnock(room, guest.id, admitted ? 'admitted' : 'denied')
+    return guest
+  }
+
+  /** A waiting guest stopped waiting: its socket closed, it left, or it joined. Safe to call when not waiting. */
+  leaveWaiting(peer: Peer): void {
+    const roomId = peer.waitingIn
+    if (!roomId) return
+    peer.waitingIn = null
+    const room = this.rooms.get(roomId)
+    if (!room || !room.removeWaiting(peer.id)) return
+    this.resolveKnock(room, peer.id, 'left')
+    if (room.isUnused()) this.rooms.delete(roomId)
+  }
+
+  private resolveKnock(room: Room, peerId: string, outcome: KnockResolvedData['outcome']): void {
+    room.broadcast({ type: 'knock-resolved', room: room.id, data: { peerId, outcome } satisfies KnockResolvedData })
   }
 
   /**
@@ -213,7 +309,8 @@ export class Hub {
     this.events.onPeerLeave(peer, reason)
 
     if (room.isEmpty()) {
-      this.rooms.delete(roomId)
+      // Guests may still be waiting: they keep the Hub's room, not the meeting's clock.
+      if (room.isUnused()) this.rooms.delete(roomId)
       this.events.onRoomEmpty(roomId)
       return
     }
@@ -256,4 +353,8 @@ export class Hub {
       room.broadcastBestEffort({ type: 'room-snapshot', room: room.id, data: room.snapshot() })
     }
   }
+}
+
+function knockRequestOf(guest: Peer): KnockRequestData {
+  return { peerId: guest.id, name: guest.name }
 }

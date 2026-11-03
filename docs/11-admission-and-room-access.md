@@ -1,6 +1,6 @@
 # Phase 11: Admission, room access and hardening
 
-Status: **frontend built**; backend next. Backend: you · Frontend: Claude
+Status: **built**. Backend: Claude (on request) · Frontend: Claude
 
 ## Goal
 
@@ -138,6 +138,10 @@ export interface KnockResolvedData { peerId: string; outcome: 'admitted' | 'deni
 
 // SignalingErrorCode gets
 | 'KNOCK_QUEUE_FULL'
+
+// IceServersRequest gets (found while testing: a guest token is bound to its tab,
+// so /ice-servers needs the tab's presence id like /sfu does)
+presenceId?: string
 ```
 
 `knock-pending` and `knock-denied` carry no data. I'll add these with the frontend, as before.
@@ -194,7 +198,7 @@ export interface KnockResolvedData { peerId: string; outcome: 'admitted' | 'deni
 ### 5. HTTP routes
 
 - **`POST /meets/new`:** also returns `hostToken`, signed for the new room.
-- **`/ice-servers`:** reads `Authorization: Bearer <token>` and runs `authorizeRequest(roomId, token)`. `401` and `403` as in Concepts; the response body uses the usual `{error, code}`, with codes `UNAUTHORIZED` and `FORBIDDEN_ROOM`.
+- **`/ice-servers`:** reads `Authorization: Bearer <token>` and runs `authorizeRequest(roomId, token, presenceId)`, with `presenceId` from the request body. `401` and `403` as in Concepts; the response body uses the usual `{error, code}`, with codes `UNAUTHORIZED` and `FORBIDDEN_ROOM`.
 - **`/sfu/sessions/new`:** the same, with the request's `presenceId`.
 - **The other `/sfu/sessions/:id/*` routes:** the token's room must equal the session's room (and for a guest, `sub` must equal its presence).
 - **Order in each handler:**

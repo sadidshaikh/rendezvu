@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { CreateMeetResponse, RoomStatusResult } from '@rendezvu/protocol'
+import type { RoomAccess } from '../access/room-access.ts'
 import { guardApiRequest } from '../http/guard.ts'
 import { RateLimiter } from '../http/rate-limiter.ts'
 import { sendError, sendJson, sendText } from '../http/respond.ts'
@@ -9,8 +10,11 @@ import { generateMeetCode, isMeetCode } from './meet-code.ts'
 
 type Handler = (req: IncomingMessage, res: ServerResponse) => void
 
-/** POST /meets/new: creates an instant meeting and returns its code. */
-export function createMeetHandler(registry: InstantRoomRegistry, allowedOrigins: string[]): Handler {
+/**
+ * POST /meets/new: creates an instant meeting and returns its code, plus a
+ * host token so its creator joins without knocking.
+ */
+export function createMeetHandler(registry: InstantRoomRegistry, access: RoomAccess, allowedOrigins: string[]): Handler {
   const limiter = new RateLimiter(12, 24)
   return (req, res) => {
     if (!guardApiRequest(req, res, { allowedOrigins, methods: 'POST', limiter })) return
@@ -29,7 +33,7 @@ export function createMeetHandler(registry: InstantRoomRegistry, allowedOrigins:
     registry.create(code)
     log('meet_created', { room: code })
 
-    const body: CreateMeetResponse = { meetCode: code }
+    const body: CreateMeetResponse = { meetCode: code, hostToken: access.issueHostToken(code) }
     sendJson(res, 200, body, { 'Cache-Control': 'no-store' })
   }
 }

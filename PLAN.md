@@ -301,7 +301,7 @@ Cloudflare's JSON errors are forwarded unchanged so the client can read them. Ev
 
 **You'll learn:** room-scoped tokens, why rate limits are per peer *and* per IP (a group behind one office NAT vs one runaway client), and where trust boundaries sit.
 
-**Done when:** a guest waits until admitted, a request without a token gets `401`, and a script hammering `sessions/new` gets `429` while the real call continues.
+**Done when:** a guest waits until admitted, a request without a token gets `401`, and a script hammering `sessions/new` gets `429` while the real call continues. ✅ Built; tested with four browser contexts (admit, deny, ask again, Admit all, a guest reconnecting) and raw sockets and curl (`401`, `403`, `429`, `1008`); see `docs/11-admission-and-room-access.md`.
 
 ---
 

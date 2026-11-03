@@ -21,6 +21,11 @@ export class Peer {
    * peer id. Never sent to anyone else.
    */
   presenceId: string
+  /**
+   * The room this peer is asking to join, while it waits to be let in. A
+   * waiting peer has no `roomId`, so every member-only message from it is ignored.
+   */
+  waitingIn: string | null = null
   /** The room this peer is in, or null before join and after leave. */
   roomId: string | null = null
   name = ''

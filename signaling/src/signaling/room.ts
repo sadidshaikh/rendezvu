@@ -5,6 +5,13 @@ import type { Peer } from './peer.ts'
 export class Room {
   readonly id: string
   private readonly members = new Map<string, Peer>()
+  /**
+   * Guests asking to join (Phase 11). Kept apart from members: they're in no
+   * roster, snapshot or broadcast, and don't keep the room "in use". Room
+   * state rather than a one-time broadcast, so a member who joins later is
+   * still told who is waiting.
+   */
+  private readonly waitingList = new Map<string, Peer>()
   // Each publisher's current track set, replayed to everyone who joins later.
   private readonly tracks = new Map<string, SfuTracksData>()
   /**
@@ -91,6 +98,33 @@ export class Room {
     return this.members.size - (this.members.has(peerId) ? 1 : 0)
   }
 
+  addWaiting(peer: Peer): void {
+    this.waitingList.set(peer.id, peer)
+  }
+
+  removeWaiting(peerId: string): boolean {
+    return this.waitingList.delete(peerId)
+  }
+
+  getWaiting(peerId: string): Peer | undefined {
+    return this.waitingList.get(peerId)
+  }
+
+  findWaitingByPresence(presenceId: string): Peer | undefined {
+    for (const peer of this.waitingList.values()) if (peer.presenceId === presenceId) return peer
+    return undefined
+  }
+
+  waiting(): Peer[] {
+    return [...this.waitingList.values()]
+  }
+
+  /** No members and nobody waiting: the Hub can forget the room. */
+  isUnused(): boolean {
+    return this.members.size === 0 && this.waitingList.size === 0
+  }
+
+  /** No members. Waiting guests don't count. */
   isEmpty(): boolean {
     return this.members.size === 0
   }
@@ -112,6 +146,12 @@ export class Room {
   broadcastExceptBestEffort(exceptId: string, env: Envelope): void {
     const payload = JSON.stringify(env)
     for (const peer of this.othersThanList(exceptId)) peer.sendBestEffortRaw(payload)
+  }
+
+  /** Critical, to every member (knock prompts). Waiting guests never get member messages. */
+  async broadcast(env: Envelope): Promise<void> {
+    const payload = JSON.stringify(env)
+    await Promise.all([...this.members.values()].map((peer) => peer.sendRaw(payload, env.type)))
   }
 
   /** Best effort to everyone, sender included (periodic snapshots). */

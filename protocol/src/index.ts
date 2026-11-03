@@ -191,6 +191,8 @@ export interface IceServer {
 /** Body of `POST /ice-servers`. */
 export interface IceServersRequest {
   roomId: string
+  /** This tab's id: a guest token only works with the presence it was issued to. */
+  presenceId?: string
 }
 
 /** Response of `POST /ice-servers`. TURN credentials in it expire after an hour. */

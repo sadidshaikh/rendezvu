@@ -9,6 +9,7 @@ import { isObject } from '../json.ts'
 import { errorMessage, log } from '../log.ts'
 import type { InstantRoomRegistry } from '../meets/instant-rooms.ts'
 import { requireActiveRoom } from '../meets/room-access.ts'
+import { sendRefusal, unauthorized, type RoomAccess } from '../access/room-access.ts'
 import type { Hub } from '../signaling/hub.ts'
 import { SfuUpstreamError, type CloudflareSfuClient, type SfuSubPath } from './cloudflare-sfu.ts'
 import type { SfuSessionKind, SfuSessionRegistry } from './session-registry.ts'
@@ -32,6 +33,7 @@ export interface SfuDeps {
   sessions: SfuSessionRegistry
   hub: Hub
   rooms: InstantRoomRegistry
+  access: RoomAccess
   /** Null when CF_CALLS_APP_ID / CF_CALLS_APP_TOKEN aren't set. */
   sfuClient: CloudflareSfuClient | null
   allowedOrigins: string[]
@@ -78,15 +80,27 @@ async function route(req: IncomingMessage, res: ServerResponse, url: URL, deps: 
       sendText(res, 405, 'method not allowed')
       return
     }
-    await createSession(res, url, deps, sfu)
+    await createSession(req, res, url, deps, sfu)
     return
   }
 
+  // Before anything about the session: without a valid token, the answer
+  // is 401 whether or not the id exists.
+  const claims = deps.access.readBearer(req)
+  if (!claims) {
+    sendRefusal(res, url.pathname, unauthorized())
+    return
+  }
   // Someone else's session gets the same 404 as a made-up one, so a guesser
   // learns nothing about which ids exist.
   const entry = sessionId ? deps.sessions.lookup(sessionId) : undefined
   if (!entry || entry.presenceId !== presenceId) {
     sendError(res, 404, 'SESSION_NOT_FOUND', 'session not found')
+    return
+  }
+  const mismatch = deps.access.mismatch(claims, entry.roomId, presenceId)
+  if (mismatch) {
+    sendRefusal(res, url.pathname, mismatch)
     return
   }
   if (!requireActiveRoom(res, deps.rooms, entry.roomId)) return
@@ -145,7 +159,7 @@ async function route(req: IncomingMessage, res: ServerResponse, url: URL, deps: 
   }
 }
 
-async function createSession(res: ServerResponse, url: URL, deps: SfuDeps, sfu: CloudflareSfuClient): Promise<void> {
+async function createSession(req: IncomingMessage, res: ServerResponse, url: URL, deps: SfuDeps, sfu: CloudflareSfuClient): Promise<void> {
   const roomId = url.searchParams.get('roomId') ?? ''
   const presenceId = url.searchParams.get('presenceId') ?? ''
   const presence = presenceId.slice(0, 8)
@@ -156,9 +170,13 @@ async function createSession(res: ServerResponse, url: URL, deps: SfuDeps, sfu: 
     sendError(res, 400, 'PARAMS_REQUIRED', 'roomId and presenceId are required')
     return
   }
-  if (!requireActiveRoom(res, deps.rooms, roomId)) return
-  // Until Phase 11's tokens, this is the ownership check: only a tab that is
-  // connected and in this room right now can open sessions for it.
+  const decision = deps.access.authorizeRequest(req, roomId, presenceId)
+  if (!decision.ok) {
+    sendRefusal(res, '/sfu/sessions/new', decision)
+    return
+  }
+  // On top of the token: only a tab that is connected and in this room right
+  // now can open sessions for it. A waiting guest isn't a member yet.
   if (!deps.hub.isPresenceInRoom(presenceId, roomId)) {
     sendError(res, 403, 'NOT_IN_ROOM', 'Join the meeting first.')
     return
