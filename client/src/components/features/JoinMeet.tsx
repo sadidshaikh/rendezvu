@@ -4,6 +4,7 @@ import { CalendarOff, Clock, Loader2, Settings } from 'lucide-react'
 import { Avatar } from '@/components/ui/Avatar'
 import { Link } from 'react-router'
 import { ServerWakeNotice } from '@/components/ui/ServerWakeNotice'
+import { Wordmark } from '@/components/ui/Wordmark'
 import { useServerState, wakeServer } from '@/lib/server-wake'
 import { Button } from '@/components/ui/button'
 import { CameraButton } from '@/components/ui/CameraButton'
@@ -147,8 +148,11 @@ export default function JoinMeet({ meetCode, roomError, onJoin }: JoinMeetProps)
         : null
 
   return (
-    <main className="call-stage relative flex flex-1 overflow-y-auto">
-      <div className="mx-auto flex w-full max-w-5xl items-start px-4 py-6 sm:items-center sm:py-10 lg:py-16">
+    <main className="call-stage relative flex flex-1 flex-col overflow-y-auto">
+      <header className="mx-auto flex w-full max-w-5xl items-center px-4 pt-5">
+        <Wordmark />
+      </header>
+      <div className="mx-auto flex w-full max-w-5xl flex-1 items-start px-4 py-6 sm:items-center sm:py-10 lg:py-14">
         <div className="grid w-full grid-cols-1 gap-4 sm:gap-6 lg:grid-cols-5">
           <div className="lg:col-span-3">
             <div

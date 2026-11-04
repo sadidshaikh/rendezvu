@@ -69,7 +69,7 @@ export default function MeetCall({ meetCode, userName, client, connState, reconn
   }
 
   return (
-    <div className="call-stage flex h-dvh w-full flex-col overflow-hidden text-foreground">
+    <div className="call-stage dark flex h-dvh w-full flex-col overflow-hidden bg-background text-foreground">
       {/* The picker previews this screen, call included. Covering it keeps the
           call out of its own preview and out of the share's first frames. */}
       {controls.shareBusy && <div className="fixed inset-0 z-[999] bg-background" aria-hidden="true" />}
