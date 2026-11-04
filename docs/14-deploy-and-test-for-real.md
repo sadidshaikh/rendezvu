@@ -78,7 +78,7 @@ You chose to start free and without a domain, and to decide Part 2's hosting lat
 
 | Piece | Host | Address | Monthly |
 |---|---|---|---|
-| Client | Cloudflare Pages | `https://<project>.pages.dev` | $0 |
+| Client | Cloudflare Pages | `https://rendezvu-132.pages.dev` (`rendezvu` was taken) | $0 |
 | Signaling server | **Render Free**, from `render.yaml` | `https://rendezvu-signal.onrender.com` | $0 |
 | Media | Cloudflare SFU and TURN | | $0 under 1,000 GB |
 
@@ -96,7 +96,7 @@ You chose to start free and without a domain, and to decide Part 2's hosting lat
 | | One consequence: after a sleep, a guest who opens the link *before anyone with a token* gets "not available". Opening the meeting yourself first (as the host) restores it. |
 | 750 free hours a month: one service 24/7 fits. | An uptime monitor pinging `/healthz` every 10 min would keep it awake for good. Render's docs don't say whether that's welcome, so it's optional. |
 | Over the free limits without a card, it's suspended, never billed. | Nothing to do: the daily SFU cap still guards the Cloudflare side. |
-| Behind Cloudflare, the real client address appears in `True-Client-IP` (reported by Render users, not documented). | `TRUSTED_IP_HEADER=true-client-ip` in `render.yaml`. **Check it after the first deploy** (see the steps). |
+| Behind Cloudflare, the real client address appears in `True-Client-IP` (not documented by Render). | `TRUSTED_IP_HEADER=true-client-ip` in `render.yaml`. **Verified on the live server (4 Nov 2026):** the log showed the caller's real public IP, and 22 sockets sending 22 spoofed values still hit the 20-per-address limit. |
 
 **Upgrading later:** Fly.io (≈ $2.50 a month, always on, with a disk) or a domain is a config change. `signaling/fly.toml` is ready, and the `Deploy signaling to Fly.io (manual)` workflow runs from the Actions tab once `FLY_API_TOKEN` is set. It doesn't run on push, so pushes don't fail while you're on Render.
 
@@ -365,6 +365,19 @@ Node 24 runs the TypeScript directly, as in development, so there's no build ste
    - `fly certs add signal.rendezvu.dev`, plus the CNAME it asks for
    - update `ALLOWED_ORIGINS` and `VITE_SERVER_DOMAIN`
 6. **GitHub:** add `FLY_API_TOKEN` (`fly tokens create deploy`) as a repository secret, and run **Deploy signaling to Fly.io (manual)** from the Actions tab (or switch its trigger back to `push`).
+
+## Deployed (4 November 2026)
+
+- Site: <https://rendezvu-132.pages.dev>, server: <https://rendezvu-signal.onrender.com> (Render Free, Singapore).
+- Checked against the live deployment:
+  - `/healthz` → `ok`, with the CORS header
+  - the server accepts only the site's origin (`403` for others)
+  - `/sfu` and `/ice-servers` without a token → `401`
+  - TURN credentials returned (6 TURN URLs); a Cloudflare SFU session opens
+  - security headers present, no CSP violations, the model and WASM served with the right caching
+  - a host and a guest (separate browser contexts): **Join now** vs **Ask to join**, knock, admit, video both ways
+  - the client-IP header (see above)
+- Join speed from the test machine: 5.5 s and 4.3 s, over the 3 s target. That machine's link to Cloudflare is known to be weak (Phase 10), so the real numbers come from test 14 on real devices.
 
 ## Testing for real
 

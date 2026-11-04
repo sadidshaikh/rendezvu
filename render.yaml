@@ -31,8 +31,10 @@ services:
       # Render listens on $PORT (10000), which the server already reads.
       - key: HOST
         value: 0.0.0.0
-      # Render sits behind Cloudflare, which sets this from the real client address.
-      # Reported by Render users, not documented by Render: check it after the first deploy.
+      # Render sits behind Cloudflare, which sets this from the real client address
+      # and overwrites any value a client sends. Not documented by Render, but verified
+      # on 2026-11-04: the log showed the caller's real public IP, and 22 sockets with
+      # 22 spoofed values still hit the 20-per-address limit.
       - key: TRUSTED_IP_HEADER
         value: true-client-ip
       # The site's exact origin, e.g. https://rendezvu.pages.dev. Asked for when the Blueprint is created.
