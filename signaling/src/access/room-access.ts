@@ -49,12 +49,20 @@ export class RoomAccess {
    * knock never starts the room's clock.
    */
   authorizeJoin(roomId: string, token: unknown, presenceId: string): JoinDecision {
-    const state = this.registry.peek(roomId)
+    const claims = verifyRoomToken(this.secret, token)
+    const fits = claims !== null && this.mismatch(claims, roomId, presenceId) === null
+    let state = this.registry.peek(roomId)
+    // The server restarted and forgot this meeting (no disk to save it on, or
+    // a crash). Our own signature on a token for it proves we created it, so
+    // the people already in it get back in instead of being turned away.
+    if (state === 'unknown' && fits && this.registry.recover(roomId, claims.exp * 1000)) {
+      log('room_recovered', { room: roomId, role: claims.role })
+      state = this.registry.peek(roomId)
+    }
     if (state === 'expired') return { kind: 'refused', code: 'ROOM_EXPIRED', message: 'This meeting is no longer active.' }
     if (state !== 'ok') return { kind: 'refused', code: 'ROOM_UNAVAILABLE', message: 'This meeting is not available right now.' }
-    const claims = verifyRoomToken(this.secret, token)
     // A token that doesn't fit is treated like none: the browser asks to join.
-    if (!claims || this.mismatch(claims, roomId, presenceId)) return { kind: 'knock' }
+    if (!fits) return { kind: 'knock' }
     return { kind: 'member', role: claims.role }
   }
 

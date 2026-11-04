@@ -4,12 +4,15 @@ import { Keyboard, Video } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { NewMeetingButton } from '@/components/ui/NewMeetingButton'
+import { ServerWakeNotice } from '@/components/ui/ServerWakeNotice'
+import { useServerState } from '@/lib/server-wake'
 import { meetCodePattern, normalizeMeetCodeInput, roomPath } from '@/lib/room-routes'
 
 export default function HomePage() {
   const navigate = useNavigate()
   const [codeInput, setCodeInput] = useState('')
   const [codeError, setCodeError] = useState<string | null>(null)
+  const server = useServerState()
 
   const handleJoin = (e: FormEvent) => {
     e.preventDefault()
@@ -35,11 +38,15 @@ export default function HomePage() {
           Meet face to face, <span className="text-primary">right in your browser.</span>
         </h1>
         <p className="mt-6 max-w-md text-lg leading-relaxed text-muted-foreground">
-          Start a meeting and share the link. Whoever opens it joins the call, no app or account needed.
+          Start a meeting and share the link. People who open it ask to join, and you let them in. No app or account needed.
         </p>
 
-        <div className="mt-9 flex max-w-xl flex-col gap-3 sm:flex-row sm:items-start">
-          <NewMeetingButton size="lg" className="h-12 px-6" />
+        <div className="mt-9 max-w-xl empty:hidden">
+          <ServerWakeNotice state={server} />
+        </div>
+
+        <div className="mt-3 flex max-w-xl flex-col gap-3 sm:flex-row sm:items-start">
+          <NewMeetingButton size="lg" className="h-12 px-6" disabled={server === 'waking'} />
           <form onSubmit={handleJoin} className="flex flex-1 flex-col gap-1.5" noValidate>
             <div className="flex gap-2">
               <div className="relative flex-1">

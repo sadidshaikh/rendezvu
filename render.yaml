@@ -1,0 +1,54 @@
+# The signaling server on Render's free plan, as a Blueprint:
+# Render dashboard → New → Blueprint → this repo.
+#
+# Free-plan facts this setup is built around:
+# - It sleeps after 15 minutes without traffic and takes ~1 minute to wake.
+#   The site wakes it on page load and says so while it starts.
+# - No persistent disk, and Render may restart it at any time, so the room
+#   registry isn't saved (no STATE_DIR). People mid-call get back in anyway:
+#   their signed token lets the server recover the meeting.
+# - Always exactly one instance, which is what this server needs.
+
+services:
+  - type: web
+    name: rendezvu-signal
+    runtime: docker
+    plan: free
+    # Can't be changed after creation. Nearest to most users: singapore
+    # (South Asia), frankfurt (Europe), virginia or ohio (US East), oregon (US West).
+    region: singapore
+    dockerfilePath: ./signaling/Dockerfile
+    # The repo root, for the npm workspace.
+    dockerContext: .
+    healthCheckPath: /healthz
+    autoDeployTrigger: commit
+    buildFilter:
+      paths:
+        - signaling/**
+        - protocol/**
+        - package-lock.json
+    envVars:
+      # Render listens on $PORT (10000), which the server already reads.
+      - key: HOST
+        value: 0.0.0.0
+      # Render sits behind Cloudflare, which sets this from the real client address.
+      # Reported by Render users, not documented by Render: check it after the first deploy.
+      - key: TRUSTED_IP_HEADER
+        value: true-client-ip
+      # The site's exact origin, e.g. https://rendezvu.pages.dev. Asked for when the Blueprint is created.
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: SFU_DAILY_SESSION_CAP
+        value: "2000"
+      # Random and stable: tokens keep working across restarts and deploys.
+      - key: ROOM_TOKEN_SECRET
+        generateValue: true
+      # Your Cloudflare Realtime app and TURN key. Asked for when the Blueprint is created.
+      - key: CF_CALLS_APP_ID
+        sync: false
+      - key: CF_CALLS_APP_TOKEN
+        sync: false
+      - key: CF_TURN_KEY_ID
+        sync: false
+      - key: CF_TURN_API_TOKEN
+        sync: false

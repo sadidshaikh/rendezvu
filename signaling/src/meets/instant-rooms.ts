@@ -134,6 +134,17 @@ export class InstantRoomRegistry {
     return restored
   }
 
+  /**
+   * A code the server forgot (a restart without a saved registry), vouched
+   * for by a token we signed for it. It comes back as created-not-started,
+   * ending when the token says. Does nothing for a code we still know.
+   */
+  recover(code: string, expiresAt: number, now = Date.now()): boolean {
+    if (this.rooms.has(code) || expiresAt <= now) return false
+    this.rooms.set(code, { createdAt: now, activatedAt: null, emptySince: null, expiresAt, closed: false })
+    return true
+  }
+
   /** Drops entries that can never be used again, so memory doesn't grow forever. */
   prune(now = Date.now()): number {
     let removed = 0

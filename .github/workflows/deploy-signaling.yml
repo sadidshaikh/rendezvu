@@ -1,13 +1,9 @@
-name: Deploy signaling
+name: Deploy signaling to Fly.io (manual)
 
+# For moving to Fly.io later (signaling/fly.toml). The server runs on Render's
+# free plan for now, which deploys itself from render.yaml on every push, so
+# this only runs when started by hand from the Actions tab.
 on:
-  push:
-    branches: [main]
-    paths:
-      - signaling/**
-      - protocol/**
-      - package-lock.json
-      - .github/workflows/deploy-signaling.yml
   workflow_dispatch:
 
 # Never two deploys at once: the second would restart the machine mid-deploy.

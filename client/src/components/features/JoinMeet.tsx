@@ -3,6 +3,8 @@ import { toast } from 'sonner'
 import { CalendarOff, Clock, Loader2, Settings } from 'lucide-react'
 import { Avatar } from '@/components/ui/Avatar'
 import { Link } from 'react-router'
+import { ServerWakeNotice } from '@/components/ui/ServerWakeNotice'
+import { useServerState, wakeServer } from '@/lib/server-wake'
 import { Button } from '@/components/ui/button'
 import { CameraButton } from '@/components/ui/CameraButton'
 import { Collapsible } from '@/components/ui/Collapsible'
@@ -42,8 +44,12 @@ export default function JoinMeet({ meetCode, roomError, onJoin }: JoinMeetProps)
   const [hasToken] = useState(() => getRoomToken(meetCode) !== null)
   const [roomStatus, setRoomStatus] = useState<LobbyRoomStatus | null>(null)
   const [statusChecked, setStatusChecked] = useState(false)
-  // Bumped by "Try again" after the server couldn't be reached.
+  // Bumped to ask for the room's status again, once a sleeping server is up.
   const [statusAttempt, setStatusAttempt] = useState(0)
+  const server = useServerState()
+  useEffect(() => {
+    if (server === 'ready' && roomStatus?.status === 'unreachable') setStatusAttempt((n) => n + 1)
+  }, [server, roomStatus?.status])
   const [deviceError, setDeviceError] = useState<string | null>(null)
   const [showSettings, setShowSettings] = useState(false)
   // A device is opening (the permission prompt may be up). Its button waits.
@@ -71,7 +77,9 @@ export default function JoinMeet({ meetCode, roomError, onJoin }: JoinMeetProps)
     let cancelled = false
     fetchRoomStatus(meetCode)
       .then((status) => {
-        if (!cancelled) setRoomStatus(status)
+        if (cancelled) return
+        setRoomStatus(status)
+        if (status.status === 'unreachable') wakeServer(true)
       })
       .finally(() => {
         if (!cancelled) setStatusChecked(true)
@@ -236,14 +244,7 @@ export default function JoinMeet({ meetCode, roomError, onJoin }: JoinMeetProps)
                 <RoomStatusCard {...blocked} />
               ) : (
                 <div className="mt-4 flex flex-col gap-3">
-                  {roomStatus?.status === 'unreachable' && (
-                    <div role="alert" className="flex items-center justify-between gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-sm">
-                      <span>Can’t reach the Rendezvu server right now. Try again in a minute.</span>
-                      <Button variant="outline" size="sm" onClick={() => setStatusAttempt((n) => n + 1)}>
-                        Try again
-                      </Button>
-                    </div>
-                  )}
+                  {roomStatus?.status === 'unreachable' && <ServerWakeNotice state={server === 'checking' ? 'waking' : server === 'ready' ? 'down' : server} />}
                   <label htmlFor="join-name" className="sr-only">
                     Your name
                   </label>

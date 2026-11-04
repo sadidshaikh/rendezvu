@@ -1,15 +1,15 @@
 # Phase 14: Deploy and test for real
 
-Status: **frontend and backend built**; deployment and real-world testing next. Hosting: Fly.io + Cloudflare Pages + a custom domain (chosen). Backend: Claude (on request) · Deployment: you · Frontend: Claude
+Status: **built**; deployment and real-world testing next. Hosting chosen: **$0, no domain** — Cloudflare Pages + Render Free (see "The setup we're using"). Fly.io and a domain stay ready as the upgrade path. Backend: Claude (on request) · Deployment: you · Frontend: Claude
 
 ## Goal
 
 Rendezvu runs on the public internet with real HTTPS, and anyone with the link can use it. You create a meeting at `https://<your-site>`, send the link to a friend on another network, and the call works. Deploys are a `git push`. A deploy, a crash or a quiet night never strands people in a broken meeting. Nobody can run up a bill on your Cloudflare account. Then the app is tried for real: real phones, real mobile data, strict networks, ten people. That's where the remaining bugs live.
 
 Because this is a resume project that strangers will click on, three things matter more than usual:
-- **The first click must work.** No minute-long cold start while a recruiter waits.
+- **The first click must work.** On the free setup the server can need a minute to wake, so the site starts waking it the moment it opens, and says so instead of failing silently.
 - **It must not cost a surprise.** Every billed service has a ceiling we control.
-- **It must look finished:** your own domain if you want one, and a page that says what happens to people's video.
+- **It must look finished:** a page that says what happens to people's video, and later your own domain.
 
 ## What it costs
 
@@ -71,6 +71,34 @@ The server is the hard part. Many "free" hosts put an idle app to sleep and star
 
 - **If it must be $0:** Cloudflare Pages plus Render Free, keeping in mind the 1-minute wake-up and links dying while idle. Everything in this doc works there too, because the server ships as a plain Dockerfile; only the platform file differs.
 - **Moving later is cheap:** the Dockerfile runs unchanged on Fly, Render, Railway, Koyeb or any VM.
+
+### The setup we're using: $0, no domain
+
+You chose to start free and without a domain, and to decide Part 2's hosting later.
+
+| Piece | Host | Address | Monthly |
+|---|---|---|---|
+| Client | Cloudflare Pages | `https://<project>.pages.dev` | $0 |
+| Signaling server | **Render Free**, from `render.yaml` | `https://rendezvu-signal.onrender.com` | $0 |
+| Media | Cloudflare SFU and TURN | | $0 under 1,000 GB |
+
+**No domain is fine for the video app.**
+- No cookies are involved: host and guest tokens live in the browser's storage and travel as an `Authorization` header, which browsers allow across sites.
+- WebSockets are checked against `ALLOWED_ORIGINS`, which simply lists the `pages.dev` origin.
+- A domain becomes necessary only in Part 2, for sign-in's `HttpOnly` cookie. Adding it then is configuration only: `ALLOWED_ORIGINS` and `VITE_SERVER_DOMAIN`.
+
+**What Render Free means, and what we built for it:**
+
+| Render Free does this | What we did about it |
+|---|---|
+| Sleeps after 15 min without traffic; ~1 min to wake. A call in progress keeps it awake (our 15 s pings count as traffic). | The site pings `/healthz` as soon as it opens, so the wake-up starts before anyone clicks. While it boots, the home page and lobby say "Starting the server… This can take up to a minute after a quiet spell", and **New meeting** waits. `/healthz` answers with CORS, so the page can tell our "ok" from Render's loading page. |
+| No persistent disk, and it may restart a free service at any time, so the room registry is lost (no `STATE_DIR` here). | **Token recovery:** when a join names a meeting the server doesn't know, and carries a valid host or guest token for exactly that meeting, the server recreates it (it signed that token, so the meeting was real), ending when the token says. People mid-call get back in after a restart. Logged as `room_recovered`. |
+| | One consequence: after a sleep, a guest who opens the link *before anyone with a token* gets "not available". Opening the meeting yourself first (as the host) restores it. |
+| 750 free hours a month: one service 24/7 fits. | An uptime monitor pinging `/healthz` every 10 min would keep it awake for good. Render's docs don't say whether that's welcome, so it's optional. |
+| Over the free limits without a card, it's suspended, never billed. | Nothing to do: the daily SFU cap still guards the Cloudflare side. |
+| Behind Cloudflare, the real client address appears in `True-Client-IP` (reported by Render users, not documented). | `TRUSTED_IP_HEADER=true-client-ip` in `render.yaml`. **Check it after the first deploy** (see the steps). |
+
+**Upgrading later:** Fly.io (≈ $2.50 a month, always on, with a disk) or a domain is a config change. `signaling/fly.toml` is ready, and the `Deploy signaling to Fly.io (manual)` workflow runs from the Actions tab once `FLY_API_TOKEN` is set. It doesn't run on push, so pushes don't fail while you're on Render.
 
 ### Planning for Part 2: Spring Boot and Postgres
 
@@ -285,9 +313,36 @@ Node 24 runs the TypeScript directly, as in development, so there's no build ste
 - **A server-unreachable message in the lobby:** if `/room/status` can't be reached at all, "Can't reach the Rendezvu server right now. Try again in a minute." instead of a spinner forever.
 - **Production build check:** `npm run build` with `VITE_SERVER_DOMAIN` set produces no `localhost` reference anywhere in `dist/`.
 
-## Deploying, step by step
+## Deploying, step by step (the free setup)
 
 1. **Cloudflare:** you already have the account, the SFU app and the TURN key.
+2. **Push the repo to GitHub** (`main`). CI runs typecheck, build and a Docker build.
+3. **Render:**
+   - sign up at render.com with GitHub (no card needed)
+   - **Before creating anything:** in `render.yaml`, set `region` to the one nearest most of your users. It can't be changed later. `singapore` is the nearest to South Asia, `frankfurt` to Europe.
+   - Dashboard → **New → Blueprint** → pick the repo. Render reads `render.yaml` and asks for the values marked `sync: false`:
+     - `ALLOWED_ORIGINS`: `https://<project>.pages.dev`. Choose the Pages project name now; you'll create it in step 4.
+     - `CF_CALLS_APP_ID`, `CF_CALLS_APP_TOKEN`, `CF_TURN_KEY_ID`, `CF_TURN_API_TOKEN`: from your Cloudflare dashboard, the same values as `signaling/.env`
+   - `ROOM_TOKEN_SECRET` is generated by Render, and stays the same across deploys.
+   - after the first deploy: `curl https://rendezvu-signal.onrender.com/healthz` → `ok`
+   - in the service's **Logs**, the `config …` line should show `production=true turn=on sfu=on trusted_ip_header=true-client-ip`
+4. **Cloudflare Pages:**
+   - Workers & Pages → Create → Pages → **Connect to Git** → the repo
+   - root directory: the repo root; build command `npm ci && npm run build -w client`; output `client/dist`
+   - environment variables: `VITE_SERVER_DOMAIN=rendezvu-signal.onrender.com`, `VITE_SERVER_SECURE=true`, and `NODE_VERSION=24`
+   - deploy → `https://<project>.pages.dev`. If the name differs from what you gave Render, update `ALLOWED_ORIGINS` there.
+5. **Check the client IP header** (rate limits depend on it): open the site, join a call, then look in Render's logs. Every `ws_connect` should be followed by nothing unusual. Then from your machine:
+   ```
+   # 22 WebSockets at once from your machine; the server allows 20 per address.
+   for i in $(seq 1 22); do curl -s -o /dev/null --http1.1 --max-time 5 -H "Origin: https://<project>.pages.dev" -H "Upgrade: websocket" -H "Connection: Upgrade" -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" https://rendezvu-signal.onrender.com/ws & done; wait
+   ```
+   - **Good:** the `ws_too_many_sockets ip=<your public IP>` log line shows your real address.
+   - **Bad:** it shows a Cloudflare or Render address. Then `True-Client-IP` isn't set, and `TRUSTED_IP_HEADER` must change (tell me what the log shows).
+6. **Deploys from then on:** push to `main`. Render rebuilds the server when `signaling/`, `protocol/` or the lockfile change; Pages rebuilds the client on every push. Pull requests get Pages preview URLs; add one to `ALLOWED_ORIGINS` to test it against the real server.
+
+## Later: moving to Fly.io (≈ $2.50 a month, always on)
+
+1. **Cloudflare:** as above.
 2. **Fly:**
    - install `flyctl`, then `fly auth signup`
    - add a card; you'll pay about $2–3 a month
@@ -301,14 +356,15 @@ Node 24 runs the TypeScript directly, as in development, so there's no build ste
    - Cloudflare dashboard → Workers & Pages → Create → Pages → connect the GitHub repo, with the build settings from item 6
    - first deploy → `https://<project>.pages.dev`
 4. **Wire them together:**
-   - `fly secrets set ALLOWED_ORIGINS=https://<project>.pages.dev` (or put it in `fly.toml`)
-   - redeploy the client if you changed `VITE_SERVER_DOMAIN`
+   - set `ALLOWED_ORIGINS` in `fly.toml` to `https://<project>.pages.dev`
+   - change Pages' `VITE_SERVER_DOMAIN` to `<app>.fly.dev` and redeploy the client
+   - suspend the Render service once Fly works
 5. **Domain** (optional for Phase 14, needed for Part 2's sign-in cookies):
    - buy it in Cloudflare Registrar
    - Pages → Custom domains → `rendezvu.dev`
    - `fly certs add signal.rendezvu.dev`, plus the CNAME it asks for
    - update `ALLOWED_ORIGINS` and `VITE_SERVER_DOMAIN`
-6. **GitHub:** add `FLY_API_TOKEN` (`fly tokens create deploy`) as a repository secret.
+6. **GitHub:** add `FLY_API_TOKEN` (`fly tokens create deploy`) as a repository secret, and run **Deploy signaling to Fly.io (manual)** from the Actions tab (or switch its trigger back to `push`).
 
 ## Testing for real
 
@@ -327,13 +383,14 @@ Phases 6–12 each left a check that needs real devices; they're collected here.
 | 9 | Safari on a Mac, Firefox, iPhone Safari, Android Chrome in one call | 2, 6, 7 | all see and hear each other; share works where supported |
 | 10 | Four mixed devices, then **ten people** (friends, or tabs across several machines) | 7 | grid fits, sound clear, no runaway CPU |
 | 11 | Blur on a real face; noise suppression with loud typing; blur on a slow phone | 12 | looks right, typing gone, guard turns blur off on a weak phone |
-| 12 | Deploy mid-call (`fly deploy`) | 8, 14 | banner, back within ~15 s, the meeting code still works |
+| 12 | Redeploy mid-call (Render → Manual Deploy) | 8, 14 | banner, back within ~1–2 min on Render Free (the image rebuilds), the meeting code still works through token recovery |
+| 12b | Leave the site idle 20 min, then open the home page | 14 | "Starting the server…", then **New meeting** works within about a minute; a meeting link opened by its host still works |
 | 13 | `curl` checks against production: `/sfu/sessions/new` without a token → `401`; 50 quick ones → `429` | 11 | as expected |
 | 14 | 20 joins, collecting the `[ttfm]` lines | 14 | p95 under 3 s |
 
 ## Done when
 
-1. The app is live at a public HTTPS address, the server is one always-on Fly machine, and pushing to `main` deploys both.
+1. The app is live at a public HTTPS address (`*.pages.dev` and `*.onrender.com`), and pushing to `main` deploys both.
 2. Every row of the test table passes, or has a written reason and an issue to fix.
 3. TTFM p95 is under 3 s over 20 joins. No frozen video lasts more than 6 s in the 15-minute cross-network call.
 4. A deploy during a call doesn't end the meeting: everyone is back within about 15 s with the same link.
