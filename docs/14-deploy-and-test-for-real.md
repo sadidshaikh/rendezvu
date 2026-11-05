@@ -98,11 +98,13 @@ You chose to start free and without a domain, and to decide Part 2's hosting lat
 | Over the free limits without a card, it's suspended, never billed. | Nothing to do: the daily SFU cap still guards the Cloudflare side. |
 | Behind Cloudflare, the real client address appears in `True-Client-IP` (not documented by Render). | `TRUSTED_IP_HEADER=true-client-ip` in `render.yaml`. **Verified on the live server (4 Nov 2026):** the log showed the caller's real public IP, and 22 sockets sending 22 spoofed values still hit the 20-per-address limit. |
 
-**Keeping the server awake with UptimeRobot (free):** without it, the first visitor after a quiet spell waits for the server to boot. After 12 idle hours that took a few minutes on the first real try, long enough that the page gave up under the old 2-minute limit.
+**Keeping the server awake with UptimeRobot (free): set up 5 November 2026, and Up.** Without it, the first visitor after a quiet spell waits for the server to boot. After 12 idle hours that took a few minutes on the first real try, long enough that the page gave up under the old 2-minute limit. The monitor in use: HTTP(s), `https://rendezvu-signal.onrender.com/healthz`, every 5 minutes, email alerts. To set it up again:
 1. Sign up at <https://uptimerobot.com> (the free plan is enough).
 2. **New monitor** → type **HTTP(s)**, URL `https://rendezvu-signal.onrender.com/healthz`, interval **5 minutes** (the free minimum; anything under 15 keeps Render from sleeping).
 3. Optional: a **Keyword** monitor for `ok` instead of plain HTTP. It also fails if Render ever serves its own page in place of ours.
 4. Alerts by email come free: if the server really goes down, you hear about it before a visitor does.
+
+Pausing or deleting the monitor brings back sleep-when-idle; the 5-minute wait and timer on the page still cover a cold start.
 
 Why 24/7 is free: 750 hours a month covers a 31-day month (744 hours) for one service. A second free Render service, such as the Part 2 API, would push the two past the limit, so Part 2 needs its own plan.
 
