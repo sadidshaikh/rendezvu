@@ -91,12 +91,22 @@ You chose to start free and without a domain, and to decide Part 2's hosting lat
 
 | Render Free does this | What we did about it |
 |---|---|
-| Sleeps after 15 min without traffic; ~1 min to wake. A call in progress keeps it awake (our 15 s pings count as traffic). | The site pings `/healthz` as soon as it opens, so the wake-up starts before anyone clicks. While it boots, the home page and lobby say "Starting the server… This can take up to a minute after a quiet spell", and **New meeting** waits. `/healthz` answers with CORS, so the page can tell our "ok" from Render's loading page. |
+| Sleeps after 15 min without traffic; ~1 min to wake, and 2–3 min after a long idle (the image is pulled again). A call in progress keeps it awake (our 15 s pings count as traffic). | The site pings `/healthz` as soon as it opens, so the wake-up starts before anyone clicks. While it boots, the home page and lobby say "Starting the server… This can take a minute or two after a quiet spell" with a running clock (a wait that counts reads as progress, not a hang), and **New meeting** waits. The page keeps trying for 5 minutes before it says it can't reach the server. `/healthz` answers with CORS, so the page can tell our "ok" from Render's loading page. |
 | No persistent disk, and it may restart a free service at any time, so the room registry is lost (no `STATE_DIR` here). | **Token recovery:** when a join names a meeting the server doesn't know, and carries a valid host or guest token for exactly that meeting, the server recreates it (it signed that token, so the meeting was real), ending when the token says. People mid-call get back in after a restart. Logged as `room_recovered`. |
 | | One consequence: after a sleep, a guest who opens the link *before anyone with a token* gets "not available". Opening the meeting yourself first (as the host) restores it. |
-| 750 free hours a month: one service 24/7 fits. | An uptime monitor pinging `/healthz` every 10 min would keep it awake for good. Render's docs don't say whether that's welcome, so it's optional. |
+| 750 free hours a month: one service 24/7 fits. | **An uptime monitor keeps it awake** (see below), so visitors never meet a cold start. `/healthz` answers `HEAD` as well as `GET`, because monitors often send `HEAD`. |
 | Over the free limits without a card, it's suspended, never billed. | Nothing to do: the daily SFU cap still guards the Cloudflare side. |
 | Behind Cloudflare, the real client address appears in `True-Client-IP` (not documented by Render). | `TRUSTED_IP_HEADER=true-client-ip` in `render.yaml`. **Verified on the live server (4 Nov 2026):** the log showed the caller's real public IP, and 22 sockets sending 22 spoofed values still hit the 20-per-address limit. |
+
+**Keeping the server awake with UptimeRobot (free):** without it, the first visitor after a quiet spell waits for the server to boot. After 12 idle hours that took a few minutes on the first real try, long enough that the page gave up under the old 2-minute limit.
+1. Sign up at <https://uptimerobot.com> (the free plan is enough).
+2. **New monitor** → type **HTTP(s)**, URL `https://rendezvu-signal.onrender.com/healthz`, interval **5 minutes** (the free minimum; anything under 15 keeps Render from sleeping).
+3. Optional: a **Keyword** monitor for `ok` instead of plain HTTP. It also fails if Render ever serves its own page in place of ours.
+4. Alerts by email come free: if the server really goes down, you hear about it before a visitor does.
+
+Why 24/7 is free: 750 hours a month covers a 31-day month (744 hours) for one service. A second free Render service, such as the Part 2 API, would push the two past the limit, so Part 2 needs its own plan.
+
+Why not a GitHub Actions schedule: scheduled runs often start late, and GitHub turns schedules off after 60 days without a commit.
 
 **Upgrading later:** Fly.io (≈ $2.50 a month, always on, with a disk) or a domain is a config change. `signaling/fly.toml` is ready, and the `Deploy signaling to Fly.io (manual)` workflow runs from the Actions tab once `FLY_API_TOKEN` is set. It doesn't run on push, so pushes don't fail while you're on Render.
 

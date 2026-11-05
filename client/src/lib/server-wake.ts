@@ -1,19 +1,21 @@
 import { useEffect, useSyncExternalStore } from 'react'
 import { httpServerUri } from '@/lib/config'
 
-// A free-plan server sleeps after 15 quiet minutes and takes about a minute
-// to start again. Asking early, the moment someone opens the site, hides most
+// A free-plan server sleeps after 15 quiet minutes. Starting again takes a
+// minute or so, and after a long idle (the image is pulled again) up to a few. Asking early, the moment someone opens the site, hides most
 // of that wait; saying so explains the rest.
 
 export type ServerState = 'checking' | 'ready' | 'waking' | 'down'
 
 const ATTEMPT_TIMEOUT_MS = 4_000
 const RETRY_MS = 3_000
-// Longer than any normal wake-up. Past it, something else is wrong.
-const GIVE_UP_MS = 120_000
+// Longer than even a slow cold start. Past it, something else is wrong.
+const GIVE_UP_MS = 5 * 60_000
 
 let state: ServerState = 'checking'
 let running = false
+// When the current wake-up began, so the notice can say how long it's been.
+let wakeStartedAt = 0
 const listeners = new Set<() => void>()
 
 function setState(next: ServerState) {
@@ -44,6 +46,7 @@ export function wakeServer(force = false): void {
   if (state === 'down') setState('checking')
   void (async () => {
     const startedAt = Date.now()
+    wakeStartedAt = startedAt
     let first = true
     while (Date.now() - startedAt < GIVE_UP_MS) {
       if (await healthy()) {
@@ -59,6 +62,11 @@ export function wakeServer(force = false): void {
     setState('down')
     running = false
   })()
+}
+
+/** When the wake-up in progress began (ms since epoch). */
+export function wakingSince(): number {
+  return wakeStartedAt
 }
 
 /** The server's state, waking it on first use. */

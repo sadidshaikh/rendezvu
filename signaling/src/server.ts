@@ -17,10 +17,11 @@ export function createServer(config: Config, routes: Routes): http.Server {
   const handler: http.RequestListener = (req, res) => {
     const path = new URL(req.url ?? '/', 'http://localhost').pathname
 
-    if (path === '/healthz' && req.method === 'GET') {
+    if (path === '/healthz' && (req.method === 'GET' || req.method === 'HEAD')) {
       // Readable from any page: the site polls it to wake a sleeping free-plan
       // server, and must tell our "ok" apart from the host's loading page.
-      // It says nothing but "ok", so there's nothing to protect.
+      // It says nothing but "ok", so there's nothing to protect. HEAD too:
+      // uptime monitors often send it, and Node leaves out the body for them.
       sendText(res, 200, 'ok', { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' })
       return
     }
